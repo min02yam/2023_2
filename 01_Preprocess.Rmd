@@ -1,0 +1,4264 @@
+---
+title: "Preprocess"
+author: "김민영"
+date: "2023년 8월 29일 화요일"
+---
+
+# 0. 사전 작업
+## 0.1 라이브러리 로드
+```{r}
+require(readr) #데이터 로드
+require(readxl) #데이터 로드
+require(dplyr) #랭글링
+require(data.table) #랭글링
+require(magrittr) #파이프라인 생성
+require(skimr) #EDA
+require(ggplot2) #시각화
+require(esquisse) #시각화
+require(DataExplorer) #시각화
+require(lubridate) #날짜파싱
+require(stringr) #문자파싱
+require(naniar) #결측치
+require(VIM) #결측치 시각화
+require(imputeTS) #시계열 결측치
+require(fastDummies) #더미변수 생성
+require(corrplot) #상관분석
+require(nortest) #정규성검정
+```
+
+
+## 0.2 워킹 디렉토리 설정
+```{r}
+CURRENT_WORKING_DIR = dirname(rstudioapi::getActiveDocumentContext()$path)
+CURRENT_WORKING_DIR
+setwd(CURRENT_WORKING_DIR)
+```
+
+# 1.  상품 데이터 전처리
+```{r}
+
+raw1 = read.csv("data/상품데이터/TB_TAT_KAMIS_PRC_MK_TB-2016.csv")
+raw2 = read.csv("data/상품데이터/TB_TAT_KAMIS_PRC_MK_TB-2017.csv")
+raw3 = read.csv("data/상품데이터/TB_TAT_KAMIS_PRC_MK_TB-2018.csv")
+raw4 = read.csv("data/상품데이터/TB_TAT_KAMIS_PRC_MK_TB-2019.csv")
+raw5 = read.csv("data/상품데이터/TB_TAT_KAMIS_PRC_MK_TB-2020.csv")
+raw6 = read.csv("data/상품데이터/TB_TAT_KAMIS_PRC_MK_TB-2021.csv")
+
+
+combined_data = rbind(raw1, raw2, raw3, raw4, raw5, raw6)
+
+
+# 원하지 않는 열 제거
+data_cleaned <- combined_data %>%
+  select(-MRKT_ESNT_NO, -MRKT_CODE, -CTNP_CODE, -SGGU_CODE, -SGGU_NM, -WSRT_EXMN_SE_CODE, -BULK_GRAD_CODE, -MTC_SMT_UNIT_MG, -MTC_SMT_UNIT_NM, -EVFD_FMPD_SMT_UNIT_MG, -EVFD_FMPD_SMT_UNIT_NM, -DCNT_PRCE_YN, -ETL_LDG_DT)
+
+
+# 컬럼명 바꾸기
+new_column_names <- c("날짜", "시장명", "시도명", "품목코드", "품목명", "품종코드", "품종명", "조사구분명","산물등급명","품목가격","도매출하단위크기","도매출하단위명","소매출하단위크기","소매출하단위명")
+colnames(data_cleaned) <- new_column_names
+print(unique(data_cleaned$품목명))
+
+
+# "조사구분명" 열의 값이 원하는 값인 행만 추출
+filtered_data <- data_cleaned %>%
+  filter(시장명 %in% c("F-유통", "C-유통", "E-유통", "복조리", "A-유통", "B-유통", "경동"))
+
+
+# "품목명" 열의 값이 원하는 값인 행만 추출
+filtered_data <- filtered_data %>%
+  filter(품목명 %in% c("수박", "참외", "딸기", "오이", "호박", "토마토", "배추","시금치","상추","양배추","무","당근","풋고추","붉은고추","파","양파","생강","깐마늘(국산)","감자","콩","팥","녹두","쌀"))
+
+
+# 품종명과 품목명을 합쳐서 새로운 열 생성
+filtered_data <- filtered_data %>%
+  mutate(품목 = paste(품목명, 품종명, sep = "_"))
+
+# 조사구분명이 "소매"인 행 추출
+filtered_data <- filtered_data %>%
+  filter(조사구분명 == "소매")
+filtered_data <- filtered_data %>%
+  select(-품목명, -품종명)
+
+# 새로운 컬럼 생성
+단위통합_품목가격 <- filtered_data$품목가격
+
+# 새로운 컬럼을 기존 데이터프레임에 붙이기
+data_with_new_column <- cbind(filtered_data, 단위통합_품목가격 = 단위통합_품목가격)
+
+# 시금치의 소매출하단위의 크기가 1KG 와 100G으로 달라서 수가 많은 1KG 으로 통일
+modified_data <- data_with_new_column %>%
+  mutate(단위통합_품목가격 = 
+           ifelse(품목 == "시금치_시금치" & 소매출하단위크기 == 100,
+                  단위통합_품목가격 * 10,  # 조건을 만족하면 10을 곱함
+                  단위통합_품목가격),  # 조건을 만족하지 않으면 그대로 사용
+         소매출하단위크기 = 
+           ifelse(품목 == "시금치_시금치" & 소매출하단위크기 == 100,
+                  소매출하단위크기 / 100,  # 조건을 만족하면 100으로 나눔
+                  소매출하단위크기),  # 조건을 만족하지 않으면 그대로 사용
+         소매출하단위명 = 
+           ifelse(품목 == "시금치_시금치" & 소매출하단위크기 == 100,
+                  "kg",  # 조건을 만족하면 "kg"로 변경
+                  소매출하단위명))  # 조건을 만족하지 않으면 그대로 사용
+
+```
+
+#2. 기상데이터 전처리
+##2.1. aws
+###(1) 머지
+```{r}
+기온 =  fread("aws_기온.csv")
+강수= fread("aws_강수.csv")
+지중온도 = fread("aws_지중.csv")
+지면온도 = fread("aws_지면온도.csv")
+초상온도 = fread("aws_초상온도.csv")
+일조_일사 = fread("aws_일조_일사.csv")
+기압 = fread("aws_기압.csv")
+습도 = fread("aws_습도.csv")
+바람 = fread("aws_바람.csv")
+```
+
+
+
+```{r}
+setkey(기온, tma, stn_id) #data.table
+setkey(강수, tma, stn_id)
+setkey(지중온도, tma, stn_id)
+setkey(지면온도, tma, stn_id)
+setkey(초상온도, tma, stn_id)
+setkey(일조_일사, tma, stn_id)
+setkey(기압, tma, stn_id)
+setkey(습도, tma, stn_id)
+setkey(바람, tma, stn_id)
+```
+
+
+```{r}
+dt = 기온[강수][지중온도][지면온도][초상온도][일조_일사][기압][습도][바람]
+#dt %>% head
+```
+
+###(2) 전처리
+```{r 날짜}
+dt %<>% mutate(tma = parse_date_time(tma, 'ymd'))
+dt %>% head
+```
+
+```{r 변수명}
+names(dt) = c("날짜", "지점명", 
+              "aws_평균_기온", "aws_최고_기온","aws_최저_기온","aws_합계_강수량",
+              "aws_평균_5CM지중온도","aws_최고_5CM지중온도","aws_최저_5CM지중온도",
+              "aws_평균_지면온도","aws_최고_지면온도","aws_최저_지면온도",
+              "aws_평균_최저_초상온도","aws_최저_초상온도",
+              "aws_합계_일조시간","aws_일조율","aws_평균_현지기압","aws_최고_현지기압","aws_최저_현지기압",
+              "aws_평균_해면기압","aws_최고_해면기압","aws_최저_해면기압",
+              "aws_평균_상대습도","aws_최저_상대습도","aws_평균_풍속","aws_최고_풍속","aws_최다_풍향"
+              )
+
+#write.csv(dt, "aws_ver_1.csv", row.names = FALSE)
+```
+
+
+##2.1.ASOS
+```{r}
+
+
+asos_1 = read_csv("기상자료포털_OBS_ASOS_DD_20230807010746.csv", locale=locale('ko', encoding = 'cp949'))
+asos_2 = read_csv("asos_pre_2.csv",  locale=locale('ko', encoding = 'cp949'))
+
+
+#asos_1 %>% head
+#asos_2 %>% head
+```
+
+```{R asos_1전처리}
+names(asos_1)
+asos_1 %>% select(contains(c('상대습도','일 최심신적설','일 최심적설', '해면기압','풍속','풍향'))) -> tmp
+tmp %<>% select(-contains('시각'))
+tmp %>% head
+
+
+tmp = tmp[,-c(9,11)]
+tmp = tmp[,-8]
+
+asos_1_tmp = asos_1[,c(3,1)]
+tmp = as.data.table(c(asos_1_tmp, tmp))
+
+```
+
+```{r asos_2 컬럼 빼기기}
+asos_2 %<>% select(-contains(c('지중온도','현지기압'))) 
+asos_2 %>% names()
+
+```
+
+```{r asos_2 이름명 바꿈}
+names(asos_2) <- c(
+"날짜", "지점번호", "asos_평균_상대습도", "asos_최소_상대습도", "asos_일_최심적설", "asos_일 최심신적설","asos_평균_해면기압", 
+"asos_최고_해면기압", "asos_최저_해면기압", "asos_평균_풍속", "asos_최대_풍속","asos_최다_풍향", "asos_평균_최저_초상온도", "asos_최저_초상온도", 
+"asos_합계_일조시간", "asos_일조율", "asos_평균_기온", "asos_최고_기온", "asos_최저_기온", "asos_평균_이슬점온도", "asos_최고_이슬점온도", 
+"asos_최저_이슬점온도", "asos_합계_강수량", "asos_평균_지면온도", "asos_최고_지면온도", "asos_최저_지면온도")
+asos_2 %>% head
+```
+
+
+```{r asos_1이름 변경}
+names(tmp) <- c(
+"날짜", "지점번호",
+"asos_최소_상대습도", "asos_평균_상대습도", "asos_일_최심신적설", "asos_일_최심적설", "asos_최고_해면기압", 
+"asos_최저_해면기압", "asos_평균_해면기압", "asos_최대_풍속", "asos_평균_풍속", "asos_최다풍향")
+
+tmp %>% head
+```
+
+
+```{r}
+tmp %>% head() #asos_최소_상대습도, asos_평균_상대습도, asos_일_최심신적설, asos_일_최심적설
+asos_2 %>% head() 
+지점_asos %>% head()
+
+asos_2 = as.data.table(asos_2)
+setkey(tmp, 날짜, 지점번호)
+setkey(asos_2, 날짜, 지점번호)
+
+cmp = asos_2[tmp]
+
+setkey(지점_asos,지점번호)
+setkey(cmp,지점번호)
+
+cmp = 지점_asos[cmp]
+
+#write.csv(cmp, "asos_ver_2.csv", row.names=FALSE)
+```
+
+# 3. 머지
+
+```{r}
+require(readr)
+require(readxl)
+
+지역명 = read_excel("지점리스트.xlsx")
+지점시도 = read_csv("지점 시도.csv", locale=locale('ko',encoding='cp949'))
+지점시도=as.data.table(지점시도)
+#names(지역명) <- c("지점명")
+
+지점시도$시도명 %>% table %>% data.table -> tmp
+
+#변수명 변경
+#asos <- cmp
+#aws <- tmp2
+
+```
+
+
+
+```{r tmp}
+
+tmp[,.(sum = sum(N))] # 2319	 
+
+지점시도=as.data.table(지점시도)
+지점시도 %>% select(종료일, 시도명, 지점명,지점) ->지점시도_tmp
+
+#지점시도_tmp %>% head
+
+#지점시도[, .N , 지점]
+
+#845개 추출
+지점시도_tmp %>% 
+  group_by(지점,지점명) %>%
+  summarise(cnt = n()) %>%
+  select(지점,지점명) -> tmp1_1
+
+tmp1_1 = as.data.table(tmp1_1)
+
+
+#1. 종료일 없는거 채우기
+#2. ans 종료일 2015년보다 작은거 자르기
+지점시도_tmp %>% filter(종료일 > '2015-01-01' | is.na(종료일) ) ->지점시도_tmp2
+지점시도_tmp2 = as.data.table(지점시도_tmp2)
+
+
+inner_join(tmp1_1,지점시도_tmp2, by=c('지점','지점명'), unmatched = "drop") -> tmp3
+########새로 만들기######
+new = as.data.frame(c(tmp3[,"지점"], tmp3[,"지점명"], tmp3[,"종료일"], tmp3[,"시도명"]))
+
+num = c(unique(new$지점))
+new = as.data.table(new)
+
+
+tmp = new[!duplicated(지점),] #637
+
+tmp 
+
+tmp %>% select(시도명,지점명,지점) -> tmp1
+
+
+tmp1
+names(tmp1) <- c('시도명','지점명','지점번호')
+
+write.csv(tmp1, "지점시도_ver_2.csv", row.names=FALSE)
+```
+
+```{r tmp}
+aws %>% names
+asos %>% names
+tmp1 %>% names  #637개
+```
+```{r, 조인}
+#aws$지점번호 %>% table %>% nrow #690개
+
+#지점번호 필터
+aws %>% filter(지점번호 %in% tmp1$지점번호) ->t # [1,421,604
+#테이블 조인
+setkey(t,지점번호)
+setkey(tmp1, 지점번호)
+
+#최종 머지
+aws_cmp =tmp1[t] #1,421,604
+
+aws_cmp = aws_cmp[,-21]
+
+
+aws_cmp %>% rename(위도=위도(degree))
+aws_cmp %<>% select("위도(degree)","경도(degree)","시도명","지점명","지점번호","날짜",
+                   "aws_평균_기온", "aws_최고_기온", "aws_최저_기온", "aws_합계_강수량", "aws_합계_일조시간",
+                   "aws_일조율","aws_평균_해면기압","aws_최고_해면기압","aws_최저_해면기압","aws_평균_상대습도",
+                   "aws_최저_상대습도","aws_평균_풍속","aws_최고_풍속","aws_최다_풍향" )
+
+write.csv(aws_cmp, "aws_ver_3.csv", row.names=FALSE)
+```
+
+
+```{r 지점명과 asos 머지하기}
+#지점번호 필터
+asos  %>% filter(지점번호 %in% tmp1$지점번호) ->t2
+#테이블 조인
+setkey(t2,지점번호)
+setkey(tmp1, 지점번호)
+#최종머지
+asos_cmp =tmp1[t2] #228,932 
+
+
+asos_cmp %>% names
+
+#aws랑 변수명 맞춤
+asos_cmp %<>% select("위도(degree)","경도(degree)","시도명","지점명","지점번호","날짜",
+                     "asos_평균_기온","asos_최고_기온","asos_최저_기온","asos_합계_강수량", "asos_합계_일조시간", 
+                     "asos_일조율", "asos_평균_해면기압", "asos_최고_해면기압", "asos_최저_해면기압","asos_평균_상대습도",
+                      "asos_최소_상대습도","asos_평균_풍속","asos_최대_풍속","asos_최다_풍향",
+                     "asos_일_최심적설","asos_일 최심신적설","asos_평균_최저_초상온도","asos_최저_초상온도",
+                     "asos_평균_이슬점온도","asos_최고_이슬점온도","asos_최저_이슬점온도","asos_평균_지면온도",
+                     "asos_최고_지면온도","asos_최저_지면온도")
+
+
+asos_cmp %<>% rename(asos_최저_상대습도=asos_최소_상대습도) 
+
+#저장
+write.csv(asos_cmp, "asos_ver_3.csv", row.names=FALSE)
+
+```
+지점개수 98->96
+총 컬럼 [229,190 -> 228,932 
+최소_상대습도 -> 최저_상대습도로 변수명 바꾸기
+
+
+## 3.2. 날짜 추가해서 머지
+```{r asos}
+setwd("C:/Users/alsdu/Downloads/기상")
+#리스트설정
+list = list.files(pattern = "SFC")
+#파일 확인
+(temp = list.files(pattern="*.csv"))
+myfiles = lapply(temp, read.delim)
+
+str(myfiles)
+
+
+
+#####################리스트로 불러오기######################
+final <-NULL 
+for (i in 1:length(list)){
+  file = assign(list[i], fread(list[i], fill = TRUE))
+  final = cbind(final,file)
+  cat("\n",i,'번째 완료') 
+}
+
+
+final %>% select( "tma","stn_id","avg_pa","max_pa","min_pa","avg_ps","max_ps",
+ "min_ps","avg_ta","max_ta","min_ta","avg_rhm","min_rhm","avg_td","max_td",
+ "min_td","sum_ss_hr","ssrate","dd_mes","dd_mefs","sum_sml_ev","sum_lrg_ev",
+ "avg_ts","max_ts","min_ts","avg_min_tg","min_tg" ) -> final1
+
+
+###강수바람###
+setwd("C:/Users/alsdu/Downloads/기상/tmp")
+
+
+
+SFC_강수_1521
+SFC_바람_1521
+ASOS_강수_15
+ASOS_바람_21
+
+
+asos_강수1 = fread("ASOS_강수_15.csv", fill = TRUE)
+asos_강수2 = fread("SFC_강수_1521.csv", fill = TRUE)
+
+asos_바람1 = fread("SFC_바람_1521.csv", fill = TRUE)
+asos_바람2 = fread("ASOS_바람_21.csv", fill = TRUE)
+
+
+
+asos_강수1 = read_csv("ASOS_강수_15.csv", locale=locale('ko',encoding='cp949'))
+asos_강수2 = read_csv("SFC_강수_1521.csv", locale=locale('ko',encoding='cp949'))
+asos_바람1 = read_csv("SFC_바람_1521.csv", locale=locale('ko',encoding='cp949'))
+asos_바람2 = read_csv("ASOS_바람_21.csv", locale=locale('ko',encoding='cp949'))
+########################################################
+#강수
+asos_강수1 %<>% mutate(일시 = parse_date_time(일시, "Ymd"))
+asos_강수2 %>% summary
+
+asos_강수1 %>% names # [1] "지점"          "지점명"        "일시"          "평균기온(°C)" "일강수량(mm)" 
+asos_강수2 %>% names # [1] "tma"    "stn_id" "sum_rn"
+
+#변수명 변경경
+names(asos_강수2) <-  c("일시","지점","일강수량")
+#변경
+asos_강수1 = as.data.table(asos_강수1)
+asos_강수2 = as.data.table(asos_강수2)
+##키설정
+#setkey(asos_강수1,일시, 지점)
+#setkey(asos_강수2,일시, 지점)
+#asos_강수2[asos_강수1] 
+
+
+names(asos_강수1) # "일시"  "지점"            "평균기온(°C)" "일강수량(mm)" 
+names(asos_강수2) # "일시"     "지점"     "일강수량"
+
+
+names(asos_강수1)<- c("지점","지점명","일시","평균기온","일강수량")
+asos_강수1 %>% select(일시,지점,일강수량) ->asos_강수1_tmp
+
+asos_강수_tmp = rbind(asos_강수1_tmp,asos_강수2)
+
+asos_강수_tmp %>% summary
+
+#지점명 
+setkey(asos_강수_tmp,지점) # 263,332 
+
+
+asos_강수1 %>% select(지점,지점명) -> asos_강수1_tmp2
+asos_강수1_tmp2
+
+
+#asos_강수_tmp 263,332
+
+asos_강수_tmp %<>% filter(일시< '2022-01-01') # 242,235
+
+
+#변수명설정
+#names(final[,1]) <- c('일시')
+#names(final)
+#키설정
+setkey(asos_강수_tmp,지점,일시)
+
+
+
+
+
+
+setkey(final1,stn_id,tma)
+
+
+asos_강수_tmp[final1]
+
+#final # 242,297
+
+
+
+left_join(asos_강수_tmp, final1, by = "ID")
+
+asos_강수_tmp %>% str
+
+
+asos_강수1[,c(1:2)] %>% unique() %>%as.data.table() -> tmp_지점명
+
+
+setkey(tmp_지점명,지점)
+setkey(final1, stn_id) #242,297
+final2 = tmp_지점명[final1]
+
+#final1
+#names(final1) 
+
+
+
+####################################
+#바람
+#asos_바람1 %>% summary
+#asos_바람2 
+
+
+names(asos_바람1) <-c("일시","지점","평균_풍속","최대_풍속","최다_풍향")
+names(asos_바람2) <-c("지점","지점명","일시","평균기온","최대_풍속","평균_풍속","최다_풍향")
+
+
+asos_바람2 %<>% select("일시","지점","평균_풍속","최대_풍속","최다_풍향")
+
+asos_바람2  %>% summary
+
+asos_바람_3 = rbind(asos_바람1,asos_바람2) 
+
+
+#지점명조인 
+setkey(tmp_지점명,지점)
+asos_바람_3 = as.data.table(asos_바람_3)
+setkey(asos_바람_3,일시,지점)
+setkey(final2,tma,지점)
+
+
+
+final4 = asos_바람_3[final2]
+
+#final3 = tmp_지점명[asos_바람_3]
+#asos_바람_3
+#tmp_지점명
+
+names(final4) <-c("일시","지점","평균_풍속","최대_풍속","최다_풍향","지점명",
+                  "평균_현지기압","최고_현지기압",
+                  "최저_현지기압","평균_해면기압","최고_해면기압","최저_해면기압","평균_기온","최고_기온","최저_기온","평균_상대습도",   
+                  "최소_상대습도","평균_이슬점온도","최고_이슬점온도","최저_이슬점온도","합계_일조_시간","일조율","일_최심적설","일_최심신적설",
+                  "합계_소형_증발량","합계_대형_증발량","평균_지면온도","최고_지면온도","최저_지면온도","평균_최저_초상온도","최저_초상온도")
+
+final4 %<>% select(-c("평균_현지기압","최고_현지기압"))
+
+write.csv(final4, "asos_ver_4.csv", row.names=F)
+```
+
+
+
+
+```{r aws}
+
+setwd("C:/Users/alsdu/Downloads/기상")
+list = list.files(pattern = "aws")
+
+
+final <-NULL 
+for (i in 1:length(list)){
+  file = assign(list[i], fread(list[i], fill = TRUE))
+  final = cbind(final,file)
+  cat("\n",i,'번째 완료') 
+}
+
+final %>% select("tma","stn_id","avg_rhm","min_rhm","avg_pa","max_pa","min_pa","avg_ps","max_ps","min_ps","avg_ws",
+                 "max_ws","max_wd","avg_min_tg","min_tg","sum_ss_hr","ssrate","avg_ta","max_ta","min_ta","sum_rn","avg_ts",
+                 "max_ts","min_ts","avg_cm5_te","max_cm5_te","min_cm5_te","sum_rn",
+                 "avg_pa","max_pa","min_pa","avg_ps","max_ps","min_ps","avg_ta","max_ta","min_ta",
+                 "avg_ws","max_ws","max_wd","avg_rhm","min_rhm","sum_ss_hr","ssrate", "avg_ts","max_ts","min_ts","avg_min_tg","min_tg")
+
+
+
+
+
+final = fread("C:/Users/alsdu/Downloads/기상/aws_1521.csv")
+
+names(final)
+
+names(final) <-c('일시','지점','평균_상대습도','최소_상대습도','평균_현지기압','최고_현지기압',
+                 '최저_현지기압','평균_해면기압','최고_해면기압','최저_해면기압','평균_풍속','최대_풍속',
+                 '최다_풍향','평균_최저_초상온도','최저_초상온도','합계_일조시간','일조율','평균_기온','최고_기온','최저_기온',
+                 '합계_강수량','평균_지면온도','최고_지면온도','최저_지면온도','평균_5cm_지중온도','최고_5cm_지중온도','최저_5cm_지중온도')
+
+
+final %<>% select(-c("평균_5cm_지중온도","최고_5cm_지중온도","최저_5cm_지중온도",'평균_지면온도',
+                    '최고_지면온도','최저_지면온도','평균_최저_초상온도','최저_초상온도'))
+
+
+#write.csv(final, "aws_ver_4.csv", row.names=F)
+```
+
+
+
+#4. 최종 머지
+
+```{r}
+aws = aws_cmp
+asos = asos_cmp
+
+aws2 = final
+asos2 = final4
+
+
+
+aws2  # [1,850,190 × 19]
+asos2 # [273,452 × 29]
+```
+```{r 컬럼 이름 변경}
+#asos
+names(asos2) <-paste0('asos_',names(asos2))
+asos2 %<>% rename(날짜=asos_일시,
+                 지점번호=asos_지점)
+asos2 %<>% rename(asos_최저_상대습도= asos_최소_상대습도)
+
+
+
+#aws
+names(aws2) <-paste0('aws_',names(aws2))
+aws2 %<>% rename(날짜=aws_일시,
+                지점번호=aws_지점)
+```
+
+```{r 잘라서 붙이기기}
+#asos
+asos2 %>% select(-c('날짜','지점번호','asos_지점명','asos_최저_현지기압','asos_합계_대형_증발량','asos_합계_소형_증발량')) %>% names %>% data.frame ->asos2_names
+asos[,-c(1:6)] %>% names  %>% data.frame -> asos_names
+
+
+asos2_names %<>% arrange(asos2_names[,1])
+asos_names %<>% arrange(asos_names[,1])
+
+asos2_names
+asos_names
+
+```
+-asos
+2번 - 최소 상대습도 -> 최저상대습도 이름 바꾸꾸기 합
+강수 붙이기
+
+
+```{r 강수붙이기}
+
+asos_합계_대형_증발량
+final2 %>% head
+
+
+
+asos_강수1%>% select(-평균기온) -> asos_강수_tmp3
+
+
+
+asos2 %>% summary # [273,452
+asos_강수_tmp3  %>% nrow() #34146
+
+asos_강수_tmp3 %<>% as.data.table
+asos2 %<>% as.data.table
+
+asos2 #날짜,지점,asos_지점명
+asos_강수_tmp3 #일시 지점 지점명
+
+asos2 %<>% rename(지점명=지졈명)
+asos_강수_tmp3 %<>% rename(날짜=일시,
+                        지점번호=지점)
+
+
+names(asos_강수_tmp3)
+names(asos2)
+
+setkey(asos_강수_tmp3,날짜,지점번호)
+setkey(asos2,날짜,지점번호)
+
+
+asos_강수_tmp3[asos2,날짜]
+
+asos_강수_tmp3 %>% str # 34146 
+asos2 %>% str#273452
+
+asos_강수_tmp3 %>%summary
+
+rbind(,asos2)
+
+bind_rows(class1, class2)
+
+
+asos2 %>% names
+```
+
+```{r}
+asos_강수_tmp %>% summary #242235  #  Median :2018-07-07 00:00:00.00
+asos2 %>% summary # 273452 #  Median :2018-12-18 90-864
+
+setkey(asos_강수_tmp,날짜,지점번호)
+setkey(asos2,날짜,지점번호)
+
+
+asos_tmp = asos_강수_tmp[asos2] 
+
+#names(asos2)
+#asos_강수_tmp %<>% rename(지점번호 = 지점)
+#asos_강수_tmp %<>% rename(날짜 = 일시)
+
+
+asos_강수_tmp %>% summary
+```
+
+
+```{r}
+asos_tmp %<>% rename(asos_합계_강수량=일강수량)
+asos_tmp %<>% select(-c(asos_최저_현지기압, asos_합계_대형_증발량, asos_합계_소형_증발량))
+
+names(asos_cmp)[22] <-c('asos_일_최심신적설')
+names(asos_cmp)[1:2] <-c('위도','경도')
+###############################
+asos_tmp %>% select(contains('asos')) %>% names %>% as.data.table-> name1
+asos_cmp %>% select(contains('asos')) %>% names %>% as.data.table-> name2
+
+name1 %>% arrange(name1[,1])
+name2 %>% arrange(name2[,1])
+##############################
+asos_tmp %>% filter(날짜<'2016-01-01') -> asos_tmp2
+asos_cmp %>% select(위도,경도,시도명,지점명) -> 지점명_tmp
+#asos_cmp %>% summary
+
+#지점명_tmp %<>% distinct()
+
+setkey(지점명_tmp,지점명)
+setkey(asos_tmp2,지점명)
+
+
+asos_tmp2[지점명_tmp]
+
+
+asos_tmp3 = left_join(asos_tmp2, 지점명_tmp, by = "지점명")
+
+str(asos_tmp3)
+str(asos_cmp)
+
+asos_tmp3 %<>% rename(asos_합계_일조시간 = asos_합계_일조_시간)
+
+asos_tmp3 %>% select(위도,경도, 시도명,지점명,지점번호,날짜,asos_평균_기온,asos_최고_기온,asos_최저_기온,
+                     asos_합계_강수량,asos_합계_일조시간,asos_일조율,
+                     asos_평균_해면기압,asos_최고_해면기압,asos_최저_해면기압, asos_평균_상대습도,
+                     asos_최저_상대습도, asos_평균_풍속,asos_최대_풍속, asos_최다_풍향, asos_일_최심적설,
+                     asos_일_최심신적설, asos_평균_최저_초상온도, asos_최저_초상온도, asos_평균_이슬점온도,
+                     asos_최고_이슬점온도, asos_최저_이슬점온도,asos_평균_지면온도, asos_최고_지면온도,
+                     asos_최저_지면온도) -> asos_tmp4
+
+asos_tmp4
+asos_cmp
+#asos_tmp2 %>% names
+#지점명_tmp %>% names
+
+asos_tmp3 %>% names
+```
+
+
+```{r 강수 데이터 붙이기}
+asos_강수_tmp %>% filter(날짜> '2021-11-25' & 날짜< '2021-12-31') ->asos_강수_tmp2
+
+asos_cmp %>% select(날짜, contains('풍')) %>% filter(날짜> '2021-11-01')
+#names(asos_강수_tmp) 
+#names(asos_cmp)
+
+asos_강수_tmp %<>% rename(asos_합계_강수량=일강수량)
+
+asos_강수_tmp2
+
+asos_cmp %>% 
+  mutate(asos_합계_강수량=  ifelse(날짜> '2021-11-25', asos_강수_tmp2$일강수량, asos_합계_강수량)) 
+
+
+asos_cmp2 %>% filter(날짜 < '2022-01-01')  -> asos_cmp3
+#write.csv(asos_cmp3, "asos_ver_5.csv", row.names = FALSE)
+
+
+```
+
+
+```{r}
+
+aws_cmp %>% filter(날짜 < '2022-01-01') ->aws_cmp2
+aws_cmp2 %>% summary
+
+#write.csv(aws_cmp2, "aws_ver_5.csv", row.names=FALSE)
+```
+
+## 4.2. 나머지 데이터셋 만들기
+
+```{r 소매}
+소매 = read_csv('소매시장_1621_ver2.csv', locale=locale('ko',encoding='cp949'))
+소매 %<>% as.data.table()
+#변수 및 날짜 형식 변경
+소매 %<>% rename(날짜=가격등록일자) %>%
+  mutate(날짜 = parse_date_time(날짜, "Ymd"))
+
+
+#glimpse(소매)
+
+소매$품목_품종 %>% table %>% nrow()
+```
+
+```{r aws}
+aws = fread("aws_ver_5.1.csv")
+
+#시도명 이름 변경
+aws %<>% mutate(시도명 = case_when(시도명=='강원도'~'강원',
+                               시도명=='경기도' ~ '경기',
+                               시도명=='경상남도' ~ '경남',
+                               시도명=='경상북도' ~ '경북',
+                               시도명=='광주광역시' ~ '광주',
+                               시도명=='대구광역시' ~'대구',
+                               시도명=='대전광역시' ~ '대전',
+                               시도명 =='부산광역시' ~ '부산', 
+                               시도명 == '서울특별시' ~ '서울', 
+                               시도명 == '세종특별시' ~ '세종',
+                               시도명 == '울산광역시' ~ '울산', 
+                               시도명 == '인천광역시' ~ '인천', 
+                               시도명 == '전라남도' ~ '전남',
+                               시도명 == '전라북도' ~ '전북',
+                               시도명 == '제주도' ~ '제주',
+                               시도명 == '충청남도' ~ '충남',
+                               시도명 == '충청북도' ~ '충북'
+                               ))
+
+#날짜 형식 변경
+aws %<>% mutate(날짜 = parse_date_time(날짜, "Ymd"))
+
+#위,경도,지점번호 제외 및 컬럼 순서 정리
+names(aws)[1:2] <- c('위도','경도')
+aws %<>% select(-c(위도,경도,지점번호,지점명)) 
+```
+
+
+```{r 4대품목제외외}
+
+소매 %>% filter(!품목_품종 %in% c('양파_양파', '깐마늘(국산)_깐마늘(국산)',
+                           '무_가을','무_고랭지','무_봄','무_월동',
+                            '배추_가을', '배추_고랭지', '배추_봄', '배추_월동')) %>%
+  filter(산물등급명 == '상품') %>% 
+  select(날짜, 시도명, 품목_품종, 단위통합_품목가격, 산물등급명) -> tmp
+
+#tmp$품목_품종 %>% table %>% View()
+```
+
+```{r 녹두 eda }
+#tmp %>% filter(품목_품종 == '녹두_국산') -> tmp_녹두
+
+#tmp_녹두[,
+#    mean_가격 := round(mean(단위통합_품목가격),1), 
+#    by=.(날짜,시도명)]
+
+#tmp_녹두 %>% select(- c(단위통합_품목가격,산물등급명)) %>% distinct()
+```
+
+```{r 콩eda}
+tmp %>% filter(품목_품종 %in% c('콩_백태(국산)','콩_흰 콩(국산)')) -> tmp_콩
+
+table(tmp_콩$품목_품종) 
+
+
+#시계열1 - facet
+ggplot(tmp_콩) +
+ aes(x = 날짜, y = 단위통합_품목가격, fill = 품목_품종, colour = 품목_품종) +
+ geom_line() +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ theme_minimal() +
+ facet_wrap(vars(품목_품종))
+
+#시계열2
+ggplot(tmp_콩) +
+ aes(x = 날짜, y = 단위통합_품목가격, fill = 품목_품종, colour = 품목_품종, 
+ group = 품목_품종) +
+ geom_line() +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ theme_minimal()
+
+
+#바이올린차트
+ggplot(tmp_콩) +
+  aes(
+    x = 품목_품종,
+    y = 단위통합_품목가격,
+    fill = 품목_품종,
+    colour = 품목_품종,
+    group = 품목_품종
+  ) +
+  geom_violin(adjust = 1L, scale = "area") +
+  scale_fill_hue(direction = 1) +
+  scale_color_hue(direction = 1) +
+  theme_minimal()
+
+
+#plot_bar(tmp_콩)
+```
+콩 두개 다 가져감
+
+```{r 팥 eda}
+tmp %>% filter(품목_품종 %in% c('팥_붉은 팥(국산)','팥_적두(국산)')) -> tmp_팥
+
+#시계열1 - facet
+ggplot(tmp_팥) +
+ aes(x = 날짜, y = 단위통합_품목가격, fill = 품목_품종, colour = 품목_품종) +
+ geom_line() +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ theme_minimal() +
+ facet_wrap(vars(품목_품종))
+
+#시계열2
+ggplot(tmp_팥) +
+ aes(x = 날짜, y = 단위통합_품목가격, fill = 품목_품종, colour = 품목_품종, 
+ group = 품목_품종) +
+ geom_line() +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ theme_minimal()
+
+
+#바이올린차트
+ggplot(tmp_팥) +
+  aes(
+    x = 품목_품종,
+    y = 단위통합_품목가격,
+    fill = 품목_품종,
+    colour = 품목_품종,
+    group = 품목_품종
+  ) +
+  geom_violin(adjust = 1L, scale = "area") +
+  scale_fill_hue(direction = 1) +
+  scale_color_hue(direction = 1) +
+  theme_minimal()
+
+
+```
+- 팥 두개 묶어서 가져감
+
+
+```{r 콩,팥}
+#콩,팥 합치기
+tmp %<>% mutate(품목_품종 = case_when(품목_품종 == '콩_백태(국산)' ~ '흰콩',
+                                 품목_품종 == '콩_흰 콩(국산)'~ '흰콩',
+                                 품목_품종 == '팥_붉은 팥(국산)' ~ '팥',
+                                 품목_품종 == '팥_적두(국산)' ~ '팥',
+                                 TRUE ~ 품목_품종))
+#품목 out집합 추출 -> tmp_out
+tmp %>% filter(품목_품종 %in% c('흰콩', '팥', '수박_수박', '참외_참외', '딸기_딸기', '오이_다다기계통', '호박_애호박', '토마토_토마토', '시금치_시금치', 
+                            '상추_적','양배추_양배추', '당근_무세척', '붉은고추_붉은고추', '파_대파', '생강_국산', '감자_수미', '쌀_일반계')) -> tmp_out
+
+table(tmp_out$품목_품종)
+
+#클래스 이름 변경
+tmp_out
+```
+
+
+#5. 지점꺼내기
+```{r}
+setwd("C:/Users/alsdu/Downloads")
+지점 = fread("지점리스트_서울제주.csv")
+지점
+```
+
+
+```{r}
+
+nrow(aws_cmp2)
+nrow(asos_cmp3)
+
+asos_cmp3 %>% select(contains('asos')) %>% names 
+aws_cmp2 %>% select(contains('aws')) %>% names
+
+
+names(asos_cmp3)
+aws_cmp2
+aws_cmp2[,c'지점번호']
+
+
+aws_평균_기온
+aws_cmp2
+```
+
+```{r}
+names(지점) <- c('지점명')
+지점 %>% nrow
+names(aws_cmp2)
+aws_cmp2 %>% filter(지점명 %in% 지점$지점명) -> tmp
+tmp$지점명 %>% as.data.frame %>% distinct() #323 
+write.csv(tmp, "aws_ver_5.1.csv", row.names=FALSE)
+
+```
+
+```{r}
+도매 = fread('도매시장_1621_수정.csv')
+소매 = read_csv("소매시장_1621_수정.csv", locale=locale('ko',encoding='cp949'))
+#도소매 = fread('도매시장_1621_수정.csv')
+
+도매 %>% head -> 도매 단위는 통일했음. 근데 기준 단위가 없음. 
+소매$소매출하단위명 %>% table
+
+
+소매$품목명_품중명 %>% table
+소매 %>% head
+
+소매 %>% filter( 품목명_품중명 == '시금치_시금치')  -> tmp
+tmp$소매출하단위크기%>% table
+도매 %>% head
+
+소매$소매출하단위명 %>% table
+
+소매$품목명_품중명%>% table %>% View()
+
+
+
+도매%>% nrow()
+
+```
+
+#6. 지역
+##6.1.배추
+```{r 배추}
+소매 = read_csv('소매시장_1621_ver2.csv', locale=locale('ko',encoding='cp949'))
+
+소매 %>% filter(품목_품종 == '배추_가을' | 품목_품종 == '배추_고랭지' | 품목_품종 == '배추_봄' | 품목_품종 == '배추_월동') %>%
+  select(가격등록일자, 시도명, 품목_품종, 단위통합_품목가격, 산물등급명) ->tmp
+
+#중품 추출
+tmp %<>% filter(산물등급명=='중품')
+tmp %<>% select(-산물등급명)
+#step1) 배추 컬럼 만듦
+names(tmp)[3]<- c('배추')
+tmp['배추']= gsub('배추_','',tmp$배추)
+
+#step2) 날짜 변수 랭글링
+#start_date = as.Date("2016-01-01")
+#end_date = as.Date("2021-12-31")
+#date = seq(start_date, end_date, by = "days")
+#date %<>% as.data.table
+#names(date) <-c('가격등록일자')
+#날짜형식변경
+#date %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+tmp %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+#데이터형식변경경
+tmp %<>% as.data.table()
+#tmp_merge = merge(date, tmp, by = c("가격등록일자"), all = TRUE) #[43,090 × 4]
+
+```
+
+```{r 강원}
+시도명 = c('강원','경기','경남','경북' ,'광주','대구','대전','부산','서울','세종','울산','인천','전남','전북','제주','충북')
+배추 = c('월동','고랭지','봄','가을')
+
+#1) 강원
+강원<- NULL
+#1월동
+tmp_강원1 = tmp %>% filter(시도명 =='강원' & 배추=="월동")
+  
+setkey(tmp_강원1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_강원1 = tmp_강원1[date]
+tmp_강원1[,'시도명'] = rep('강원', nrow(tmp_강원1))
+tmp_강원1[,'배추'] = rep("월동", nrow(tmp_강원1))
+
+#2고랭지
+tmp_강원2 = tmp %>% filter(시도명 =='강원' & 배추=="고랭지")
+  
+setkey(tmp_강원2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_강원2 = tmp_강원1[date]
+tmp_강원2[,'시도명'] = rep('강원', nrow(tmp_강원2))
+tmp_강원2[,'배추'] = rep("고랭지", nrow(tmp_강원2))
+
+#3봄
+tmp_강원3 = tmp %>% filter(시도명 =='강원' & 배추=="봄")
+  
+setkey(tmp_강원3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_강원3 = tmp_강원1[date]
+tmp_강원3[,'시도명'] = rep('강원', nrow(tmp_강원3))
+tmp_강원3[,'배추'] = rep("봄", nrow(tmp_강원3))
+
+
+#4가을
+tmp_강원4 = tmp %>% filter(시도명 =='강원' & 배추=="가을")
+  
+setkey(tmp_강원4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_강원4 = tmp_강원1[date]
+tmp_강원4[,'시도명'] = rep('강원', nrow(tmp_강원4))
+tmp_강원4[,'배추'] = rep("가을", nrow(tmp_강원4))
+
+
+강원=rbind(tmp_강원1,tmp_강원2,tmp_강원3,tmp_강원4)
+#강원$배추 %>% table
+```
+
+```{r}
+#1) 강원
+강원<- NULL
+#1월동
+tmp_강원1 = tmp %>% filter(시도명 =='강원' & 배추=="월동")
+  
+setkey(tmp_강원1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_강원1 = tmp_강원1[date]
+tmp_강원1[,'시도명'] = rep('강원', nrow(tmp_강원1))
+tmp_강원1[,'배추'] = rep("월동", nrow(tmp_강원1))
+
+#2고랭지
+tmp_강원2 = tmp %>% filter(시도명 =='강원' & 배추=="고랭지")
+  
+setkey(tmp_강원2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_강원2 = tmp_강원1[date]
+tmp_강원2[,'시도명'] = rep('강원', nrow(tmp_강원2))
+tmp_강원2[,'배추'] = rep("고랭지", nrow(tmp_강원2))
+
+#3봄
+tmp_강원3 = tmp %>% filter(시도명 =='강원' & 배추=="봄")
+  
+setkey(tmp_강원3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_강원3 = tmp_강원1[date]
+tmp_강원3[,'시도명'] = rep('강원', nrow(tmp_강원3))
+tmp_강원3[,'배추'] = rep("봄", nrow(tmp_강원3))
+
+
+#4가을
+tmp_강원4 = tmp %>% filter(시도명 =='강원' & 배추=="가을")
+  
+setkey(tmp_강원4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_강원4 = tmp_강원1[date]
+tmp_강원4[,'시도명'] = rep('강원', nrow(tmp_강원4))
+tmp_강원4[,'배추'] = rep("가을", nrow(tmp_강원4))
+
+강원=rbind(tmp_강원1,tmp_강원2,tmp_강원3,tmp_강원4)
+#강원$배추 %>% table
+
+#1) 경기
+경기<- NULL
+#1월동
+tmp_경기1 = tmp %>% filter(시도명 =='경기' & 배추=="월동")
+  
+setkey(tmp_경기1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경기1 = tmp_경기1[date]
+tmp_경기1[,'시도명'] = rep('경기', nrow(tmp_경기1))
+tmp_경기1[,'배추'] = rep("월동", nrow(tmp_경기1))
+
+#2고랭지
+tmp_경기2 = tmp %>% filter(시도명 =='경기' & 배추=="고랭지")
+  
+setkey(tmp_경기2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경기2 = tmp_경기1[date]
+tmp_경기2[,'시도명'] = rep('경기', nrow(tmp_경기2))
+tmp_경기2[,'배추'] = rep("고랭지", nrow(tmp_경기2))
+
+#3봄
+tmp_경기3 = tmp %>% filter(시도명 =='경기' & 배추=="봄")
+  
+setkey(tmp_경기3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경기3 = tmp_경기1[date]
+tmp_경기3[,'시도명'] = rep('경기', nrow(tmp_경기3))
+tmp_경기3[,'배추'] = rep("봄", nrow(tmp_경기3))
+
+
+#4가을
+tmp_경기4 = tmp %>% filter(시도명 =='경기' & 배추=="가을")
+  
+setkey(tmp_경기4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경기4 = tmp_경기1[date]
+tmp_경기4[,'시도명'] = rep('경기', nrow(tmp_경기4))
+tmp_경기4[,'배추'] = rep("가을", nrow(tmp_경기4))
+
+
+경기=rbind(tmp_경기1,tmp_경기2,tmp_경기3,tmp_경기4)
+#경기$배추 %>% table
+
+#1) 경남
+경남<- NULL
+#1월동
+tmp_경남1 = tmp %>% filter(시도명 =='경남' & 배추=="월동")
+  
+setkey(tmp_경남1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경남1 = tmp_경남1[date]
+tmp_경남1[,'시도명'] = rep('경남', nrow(tmp_경남1))
+tmp_경남1[,'배추'] = rep("월동", nrow(tmp_경남1))
+
+#2고랭지
+tmp_경남2 = tmp %>% filter(시도명 =='경남' & 배추=="고랭지")
+  
+setkey(tmp_경남2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경남2 = tmp_경남1[date]
+tmp_경남2[,'시도명'] = rep('경남', nrow(tmp_경남2))
+tmp_경남2[,'배추'] = rep("고랭지", nrow(tmp_경남2))
+
+#3봄
+tmp_경남3 = tmp %>% filter(시도명 =='경남' & 배추=="봄")
+  
+setkey(tmp_경남3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경남3 = tmp_경남1[date]
+tmp_경남3[,'시도명'] = rep('경남', nrow(tmp_경남3))
+tmp_경남3[,'배추'] = rep("봄", nrow(tmp_경남3))
+
+
+#4가을
+tmp_경남4 = tmp %>% filter(시도명 =='경남' & 배추=="가을")
+  
+setkey(tmp_경남4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경남4 = tmp_경남1[date]
+tmp_경남4[,'시도명'] = rep('경남', nrow(tmp_경남4))
+tmp_경남4[,'배추'] = rep("가을", nrow(tmp_경남4))
+
+
+경남=rbind(tmp_경남1,tmp_경남2,tmp_경남3,tmp_경남4)
+#경남$배추 %>% table
+
+#1) 경북
+경북<- NULL
+#1월동
+tmp_경북1 = tmp %>% filter(시도명 =='경북' & 배추=="월동")
+  
+setkey(tmp_경북1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경북1 = tmp_경북1[date]
+tmp_경북1[,'시도명'] = rep('경북', nrow(tmp_경북1))
+tmp_경북1[,'배추'] = rep("월동", nrow(tmp_경북1))
+
+#2고랭지
+tmp_경북2 = tmp %>% filter(시도명 =='경북' & 배추=="고랭지")
+  
+setkey(tmp_경북2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경북2 = tmp_경북1[date]
+tmp_경북2[,'시도명'] = rep('경북', nrow(tmp_경북2))
+tmp_경북2[,'배추'] = rep("고랭지", nrow(tmp_경북2))
+
+#3봄
+tmp_경북3 = tmp %>% filter(시도명 =='경북' & 배추=="봄")
+  
+setkey(tmp_경북3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경북3 = tmp_경북1[date]
+tmp_경북3[,'시도명'] = rep('경북', nrow(tmp_경북3))
+tmp_경북3[,'배추'] = rep("봄", nrow(tmp_경북3))
+
+
+#4가을
+tmp_경북4 = tmp %>% filter(시도명 =='경북' & 배추=="가을")
+  
+setkey(tmp_경북4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_경북4 = tmp_경북1[date]
+tmp_경북4[,'시도명'] = rep('경북', nrow(tmp_경북4))
+tmp_경북4[,'배추'] = rep("가을", nrow(tmp_경북4))
+
+
+경북=rbind(tmp_경북1,tmp_경북2,tmp_경북3,tmp_경북4)
+#경북$배추 %>% table
+
+#1) 광주
+광주<- NULL
+#1월동
+tmp_광주1 = tmp %>% filter(시도명 =='광주' & 배추=="월동")
+  
+setkey(tmp_광주1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_광주1 = tmp_광주1[date]
+tmp_광주1[,'시도명'] = rep('광주', nrow(tmp_광주1))
+tmp_광주1[,'배추'] = rep("월동", nrow(tmp_광주1))
+
+#2고랭지
+tmp_광주2 = tmp %>% filter(시도명 =='광주' & 배추=="고랭지")
+  
+setkey(tmp_광주2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_광주2 = tmp_광주1[date]
+tmp_광주2[,'시도명'] = rep('광주', nrow(tmp_광주2))
+tmp_광주2[,'배추'] = rep("고랭지", nrow(tmp_광주2))
+
+#3봄
+tmp_광주3 = tmp %>% filter(시도명 =='광주' & 배추=="봄")
+  
+setkey(tmp_광주3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_광주3 = tmp_광주1[date]
+tmp_광주3[,'시도명'] = rep('광주', nrow(tmp_광주3))
+tmp_광주3[,'배추'] = rep("봄", nrow(tmp_광주3))
+
+
+#4가을
+tmp_광주4 = tmp %>% filter(시도명 =='광주' & 배추=="가을")
+  
+setkey(tmp_광주4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_광주4 = tmp_광주1[date]
+tmp_광주4[,'시도명'] = rep('광주', nrow(tmp_광주4))
+tmp_광주4[,'배추'] = rep("가을", nrow(tmp_광주4))
+
+
+광주=rbind(tmp_광주1,tmp_광주2,tmp_광주3,tmp_광주4)
+#광주$배추 %>% table
+
+#1) 대구
+대구<- NULL
+#1월동
+tmp_대구1 = tmp %>% filter(시도명 =='대구' & 배추=="월동")
+  
+setkey(tmp_대구1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_대구1 = tmp_대구1[date]
+tmp_대구1[,'시도명'] = rep('대구', nrow(tmp_대구1))
+tmp_대구1[,'배추'] = rep("월동", nrow(tmp_대구1))
+
+#2고랭지
+tmp_대구2 = tmp %>% filter(시도명 =='대구' & 배추=="고랭지")
+  
+setkey(tmp_대구2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_대구2 = tmp_대구1[date]
+tmp_대구2[,'시도명'] = rep('대구', nrow(tmp_대구2))
+tmp_대구2[,'배추'] = rep("고랭지", nrow(tmp_대구2))
+
+#3봄
+tmp_대구3 = tmp %>% filter(시도명 =='대구' & 배추=="봄")
+  
+setkey(tmp_대구3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_대구3 = tmp_대구1[date]
+tmp_대구3[,'시도명'] = rep('대구', nrow(tmp_대구3))
+tmp_대구3[,'배추'] = rep("봄", nrow(tmp_대구3))
+
+
+#4가을
+tmp_대구4 = tmp %>% filter(시도명 =='대구' & 배추=="가을")
+  
+setkey(tmp_대구4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_대구4 = tmp_대구1[date]
+tmp_대구4[,'시도명'] = rep('대구', nrow(tmp_대구4))
+tmp_대구4[,'배추'] = rep("가을", nrow(tmp_대구4))
+
+대구=rbind(tmp_대구1,tmp_대구2,tmp_대구3,tmp_대구4)
+#대구$배추 %>% table
+
+#1) 대전
+대전<- NULL
+#1월동
+tmp_대전1 = tmp %>% filter(시도명 =='대전' & 배추=="월동")
+  
+setkey(tmp_대전1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_대전1 = tmp_대전1[date]
+tmp_대전1[,'시도명'] = rep('대전', nrow(tmp_대전1))
+tmp_대전1[,'배추'] = rep("월동", nrow(tmp_대전1))
+
+#2고랭지
+tmp_대전2 = tmp %>% filter(시도명 =='대전' & 배추=="고랭지")
+  
+setkey(tmp_대전2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_대전2 = tmp_대전1[date]
+tmp_대전2[,'시도명'] = rep('대전', nrow(tmp_대전2))
+tmp_대전2[,'배추'] = rep("고랭지", nrow(tmp_대전2))
+
+#3봄
+tmp_대전3 = tmp %>% filter(시도명 =='대전' & 배추=="봄")
+  
+setkey(tmp_대전3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_대전3 = tmp_대전1[date]
+tmp_대전3[,'시도명'] = rep('대전', nrow(tmp_대전3))
+tmp_대전3[,'배추'] = rep("봄", nrow(tmp_대전3))
+
+
+#4가을
+tmp_대전4 = tmp %>% filter(시도명 =='대전' & 배추=="가을")
+  
+setkey(tmp_대전4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_대전4 = tmp_대전1[date]
+tmp_대전4[,'시도명'] = rep('대전', nrow(tmp_대전4))
+tmp_대전4[,'배추'] = rep("가을", nrow(tmp_대전4))
+
+
+대전=rbind(tmp_대전1,tmp_대전2,tmp_대전3,tmp_대전4)
+#대전$배추 %>% table
+대구=rbind(tmp_대구1,tmp_대구2,tmp_대구3,tmp_대구4)
+#대구$배추 %>% table
+
+#1) 부산
+부산<- NULL
+#1월동
+tmp_부산1 = tmp %>% filter(시도명 =='부산' & 배추=="월동")
+  
+setkey(tmp_부산1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_부산1 = tmp_부산1[date]
+tmp_부산1[,'시도명'] = rep('부산', nrow(tmp_부산1))
+tmp_부산1[,'배추'] = rep("월동", nrow(tmp_부산1))
+
+#2고랭지
+tmp_부산2 = tmp %>% filter(시도명 =='부산' & 배추=="고랭지")
+  
+setkey(tmp_부산2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_부산2 = tmp_부산1[date]
+tmp_부산2[,'시도명'] = rep('부산', nrow(tmp_부산2))
+tmp_부산2[,'배추'] = rep("고랭지", nrow(tmp_부산2))
+
+#3봄
+tmp_부산3 = tmp %>% filter(시도명 =='부산' & 배추=="봄")
+  
+setkey(tmp_부산3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_부산3 = tmp_부산1[date]
+tmp_부산3[,'시도명'] = rep('부산', nrow(tmp_부산3))
+tmp_부산3[,'배추'] = rep("봄", nrow(tmp_부산3))
+
+
+#4가을
+tmp_부산4 = tmp %>% filter(시도명 =='부산' & 배추=="가을")
+  
+setkey(tmp_부산4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_부산4 = tmp_부산1[date]
+tmp_부산4[,'시도명'] = rep('부산', nrow(tmp_부산4))
+tmp_부산4[,'배추'] = rep("가을", nrow(tmp_부산4))
+
+
+부산=rbind(tmp_부산1,tmp_부산2,tmp_부산3,tmp_부산4)
+#부산$배추 %>% table
+대구=rbind(tmp_대구1,tmp_대구2,tmp_대구3,tmp_대구4)
+#대구$배추 %>% table
+
+#1) 서울
+서울<- NULL
+#1월동
+tmp_서울1 = tmp %>% filter(시도명 =='서울' & 배추=="월동")
+  
+setkey(tmp_서울1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_서울1 = tmp_서울1[date]
+tmp_서울1[,'시도명'] = rep('서울', nrow(tmp_서울1))
+tmp_서울1[,'배추'] = rep("월동", nrow(tmp_서울1))
+
+#2고랭지
+tmp_서울2 = tmp %>% filter(시도명 =='서울' & 배추=="고랭지")
+  
+setkey(tmp_서울2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_서울2 = tmp_서울1[date]
+tmp_서울2[,'시도명'] = rep('서울', nrow(tmp_서울2))
+tmp_서울2[,'배추'] = rep("고랭지", nrow(tmp_서울2))
+
+#3봄
+tmp_서울3 = tmp %>% filter(시도명 =='서울' & 배추=="봄")
+  
+setkey(tmp_서울3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_서울3 = tmp_서울1[date]
+tmp_서울3[,'시도명'] = rep('서울', nrow(tmp_서울3))
+tmp_서울3[,'배추'] = rep("봄", nrow(tmp_서울3))
+
+
+#4가을
+tmp_서울4 = tmp %>% filter(시도명 =='서울' & 배추=="가을")
+  
+setkey(tmp_서울4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_서울4 = tmp_서울1[date]
+tmp_서울4[,'시도명'] = rep('서울', nrow(tmp_서울4))
+tmp_서울4[,'배추'] = rep("가을", nrow(tmp_서울4))
+
+
+서울=rbind(tmp_서울1,tmp_서울2,tmp_서울3,tmp_서울4)
+#서울$배추 %>% table
+
+
+#1) 세종
+세종<- NULL
+#1월동
+tmp_세종1 = tmp %>% filter(시도명 =='세종' & 배추=="월동")
+  
+setkey(tmp_세종1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_세종1 = tmp_세종1[date]
+tmp_세종1[,'시도명'] = rep('세종', nrow(tmp_세종1))
+tmp_세종1[,'배추'] = rep("월동", nrow(tmp_세종1))
+
+#2고랭지
+tmp_세종2 = tmp %>% filter(시도명 =='세종' & 배추=="고랭지")
+  
+setkey(tmp_세종2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_세종2 = tmp_세종1[date]
+tmp_세종2[,'시도명'] = rep('세종', nrow(tmp_세종2))
+tmp_세종2[,'배추'] = rep("고랭지", nrow(tmp_세종2))
+
+#3봄
+tmp_세종3 = tmp %>% filter(시도명 =='세종' & 배추=="봄")
+  
+setkey(tmp_세종3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_세종3 = tmp_세종1[date]
+tmp_세종3[,'시도명'] = rep('세종', nrow(tmp_세종3))
+tmp_세종3[,'배추'] = rep("봄", nrow(tmp_세종3))
+
+
+#4가을
+tmp_세종4 = tmp %>% filter(시도명 =='세종' & 배추=="가을")
+  
+setkey(tmp_세종4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_세종4 = tmp_세종1[date]
+tmp_세종4[,'시도명'] = rep('세종', nrow(tmp_세종4))
+tmp_세종4[,'배추'] = rep("가을", nrow(tmp_세종4))
+
+
+세종=rbind(tmp_세종1,tmp_세종2,tmp_세종3,tmp_세종4)
+#세종$배추 %>% table
+
+#1) 울산
+울산<- NULL
+#1월동
+tmp_울산1 = tmp %>% filter(시도명 =='울산' & 배추=="월동")
+  
+setkey(tmp_울산1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_울산1 = tmp_울산1[date]
+tmp_울산1[,'시도명'] = rep('울산', nrow(tmp_울산1))
+tmp_울산1[,'배추'] = rep("월동", nrow(tmp_울산1))
+
+#2고랭지
+tmp_울산2 = tmp %>% filter(시도명 =='울산' & 배추=="고랭지")
+  
+setkey(tmp_울산2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_울산2 = tmp_울산1[date]
+tmp_울산2[,'시도명'] = rep('울산', nrow(tmp_울산2))
+tmp_울산2[,'배추'] = rep("고랭지", nrow(tmp_울산2))
+
+#3봄
+tmp_울산3 = tmp %>% filter(시도명 =='울산' & 배추=="봄")
+  
+setkey(tmp_울산3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_울산3 = tmp_울산1[date]
+tmp_울산3[,'시도명'] = rep('울산', nrow(tmp_울산3))
+tmp_울산3[,'배추'] = rep("봄", nrow(tmp_울산3))
+
+
+#4가을
+tmp_울산4 = tmp %>% filter(시도명 =='울산' & 배추=="가을")
+  
+setkey(tmp_울산4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_울산4 = tmp_울산1[date]
+tmp_울산4[,'시도명'] = rep('울산', nrow(tmp_울산4))
+tmp_울산4[,'배추'] = rep("가을", nrow(tmp_울산4))
+
+
+울산=rbind(tmp_울산1,tmp_울산2,tmp_울산3,tmp_울산4)
+#울산$배추 %>% table
+
+#1) 인천
+인천<- NULL
+#1월동
+tmp_인천1 = tmp %>% filter(시도명 =='인천' & 배추=="월동")
+  
+setkey(tmp_인천1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_인천1 = tmp_인천1[date]
+tmp_인천1[,'시도명'] = rep('인천', nrow(tmp_인천1))
+tmp_인천1[,'배추'] = rep("월동", nrow(tmp_인천1))
+
+#2고랭지
+tmp_인천2 = tmp %>% filter(시도명 =='인천' & 배추=="고랭지")
+  
+setkey(tmp_인천2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_인천2 = tmp_인천1[date]
+tmp_인천2[,'시도명'] = rep('인천', nrow(tmp_인천2))
+tmp_인천2[,'배추'] = rep("고랭지", nrow(tmp_인천2))
+
+#3봄
+tmp_인천3 = tmp %>% filter(시도명 =='인천' & 배추=="봄")
+  
+setkey(tmp_인천3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_인천3 = tmp_인천1[date]
+tmp_인천3[,'시도명'] = rep('인천', nrow(tmp_인천3))
+tmp_인천3[,'배추'] = rep("봄", nrow(tmp_인천3))
+
+
+#4가을
+tmp_인천4 = tmp %>% filter(시도명 =='인천' & 배추=="가을")
+  
+setkey(tmp_인천4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_인천4 = tmp_인천1[date]
+tmp_인천4[,'시도명'] = rep('인천', nrow(tmp_인천4))
+tmp_인천4[,'배추'] = rep("가을", nrow(tmp_인천4))
+
+
+인천=rbind(tmp_인천1,tmp_인천2,tmp_인천3,tmp_인천4)
+#인천$배추 %>% table
+
+#1) 전남
+전남<- NULL
+#1월동
+tmp_전남1 = tmp %>% filter(시도명 =='전남' & 배추=="월동")
+  
+setkey(tmp_전남1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_전남1 = tmp_전남1[date]
+tmp_전남1[,'시도명'] = rep('전남', nrow(tmp_전남1))
+tmp_전남1[,'배추'] = rep("월동", nrow(tmp_전남1))
+
+#2고랭지
+tmp_전남2 = tmp %>% filter(시도명 =='전남' & 배추=="고랭지")
+  
+setkey(tmp_전남2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_전남2 = tmp_전남1[date]
+tmp_전남2[,'시도명'] = rep('전남', nrow(tmp_전남2))
+tmp_전남2[,'배추'] = rep("고랭지", nrow(tmp_전남2))
+
+#3봄
+tmp_전남3 = tmp %>% filter(시도명 =='전남' & 배추=="봄")
+  
+setkey(tmp_전남3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_전남3 = tmp_전남1[date]
+tmp_전남3[,'시도명'] = rep('전남', nrow(tmp_전남3))
+tmp_전남3[,'배추'] = rep("봄", nrow(tmp_전남3))
+
+
+#4가을
+tmp_전남4 = tmp %>% filter(시도명 =='전남' & 배추=="가을")
+  
+setkey(tmp_전남4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_전남4 = tmp_전남1[date]
+tmp_전남4[,'시도명'] = rep('전남', nrow(tmp_전남4))
+tmp_전남4[,'배추'] = rep("가을", nrow(tmp_전남4))
+
+
+전남=rbind(tmp_전남1,tmp_전남2,tmp_전남3,tmp_전남4)
+#전남$배추 %>% table
+
+#1) 전북
+전북<- NULL
+#1월동
+tmp_전북1 = tmp %>% filter(시도명 =='전북' & 배추=="월동")
+  
+setkey(tmp_전북1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_전북1 = tmp_전북1[date]
+tmp_전북1[,'시도명'] = rep('전북', nrow(tmp_전북1))
+tmp_전북1[,'배추'] = rep("월동", nrow(tmp_전북1))
+
+#2고랭지
+tmp_전북2 = tmp %>% filter(시도명 =='전북' & 배추=="고랭지")
+  
+setkey(tmp_전북2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_전북2 = tmp_전북1[date]
+tmp_전북2[,'시도명'] = rep('전북', nrow(tmp_전북2))
+tmp_전북2[,'배추'] = rep("고랭지", nrow(tmp_전북2))
+
+#3봄
+tmp_전북3 = tmp %>% filter(시도명 =='전북' & 배추=="봄")
+  
+setkey(tmp_전북3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_전북3 = tmp_전북1[date]
+tmp_전북3[,'시도명'] = rep('전북', nrow(tmp_전북3))
+tmp_전북3[,'배추'] = rep("봄", nrow(tmp_전북3))
+
+
+#4가을
+tmp_전북4 = tmp %>% filter(시도명 =='전북' & 배추=="가을")
+  
+setkey(tmp_전북4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_전북4 = tmp_전북1[date]
+tmp_전북4[,'시도명'] = rep('전북', nrow(tmp_전북4))
+tmp_전북4[,'배추'] = rep("가을", nrow(tmp_전북4))
+
+
+전북=rbind(tmp_전북1,tmp_전북2,tmp_전북3,tmp_전북4)
+#전북$배추 %>% table
+
+#1) 제주
+제주<- NULL
+#1월동
+tmp_제주1 = tmp %>% filter(시도명 =='제주' & 배추=="월동")
+  
+setkey(tmp_제주1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_제주1 = tmp_제주1[date]
+tmp_제주1[,'시도명'] = rep('제주', nrow(tmp_제주1))
+tmp_제주1[,'배추'] = rep("월동", nrow(tmp_제주1))
+
+#2고랭지
+tmp_제주2 = tmp %>% filter(시도명 =='제주' & 배추=="고랭지")
+  
+setkey(tmp_제주2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_제주2 = tmp_제주1[date]
+tmp_제주2[,'시도명'] = rep('제주', nrow(tmp_제주2))
+tmp_제주2[,'배추'] = rep("고랭지", nrow(tmp_제주2))
+
+#3봄
+tmp_제주3 = tmp %>% filter(시도명 =='제주' & 배추=="봄")
+  
+setkey(tmp_제주3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_제주3 = tmp_제주1[date]
+tmp_제주3[,'시도명'] = rep('제주', nrow(tmp_제주3))
+tmp_제주3[,'배추'] = rep("봄", nrow(tmp_제주3))
+
+
+#4가을
+tmp_제주4 = tmp %>% filter(시도명 =='제주' & 배추=="가을")
+  
+setkey(tmp_제주4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_제주4 = tmp_제주1[date]
+tmp_제주4[,'시도명'] = rep('제주', nrow(tmp_제주4))
+tmp_제주4[,'배추'] = rep("가을", nrow(tmp_제주4))
+
+
+제주=rbind(tmp_제주1,tmp_제주2,tmp_제주3,tmp_제주4)
+#제주$배추 %>% table
+
+#1) 충북
+충북<- NULL
+#1월동
+tmp_충북1 = tmp %>% filter(시도명 =='충북' & 배추=="월동")
+  
+setkey(tmp_충북1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_충북1 = tmp_충북1[date]
+tmp_충북1[,'시도명'] = rep('충북', nrow(tmp_충북1))
+tmp_충북1[,'배추'] = rep("월동", nrow(tmp_충북1))
+
+#2고랭지
+tmp_충북2 = tmp %>% filter(시도명 =='충북' & 배추=="고랭지")
+  
+setkey(tmp_충북2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_충북2 = tmp_충북1[date]
+tmp_충북2[,'시도명'] = rep('충북', nrow(tmp_충북2))
+tmp_충북2[,'배추'] = rep("고랭지", nrow(tmp_충북2))
+
+#3봄
+tmp_충북3 = tmp %>% filter(시도명 =='충북' & 배추=="봄")
+  
+setkey(tmp_충북3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_충북3 = tmp_충북1[date]
+tmp_충북3[,'시도명'] = rep('충북', nrow(tmp_충북3))
+tmp_충북3[,'배추'] = rep("봄", nrow(tmp_충북3))
+
+
+#4가을
+tmp_충북4 = tmp %>% filter(시도명 =='충북' & 배추=="가을")
+  
+setkey(tmp_충북4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_충북4 = tmp_충북1[date]
+tmp_충북4[,'시도명'] = rep('충북', nrow(tmp_충북4))
+tmp_충북4[,'배추'] = rep("가을", nrow(tmp_충북4))
+
+
+충북=rbind(tmp_충북1,tmp_충북2,tmp_충북3,tmp_충북4)
+#충북$배추 %>% table
+```
+
+
+```{r}
+#가격
+tmp[,
+    mean_가격 := round(mean(단위통합_품목가격),1), 
+    by=.(가격등록일자,시도명)]
+
+tmp %<>% select(-단위통합_품목가격) 
+tmp[,'품목'] = rep('배추', nrow(tmp)) #품목 생성성
+tmp %<>% select(-배추) 
+
+tmp %<>% distinct()
+```
+
+
+```{r, 날씨랑 머지}
+aws = fread("aws_ver_5.1.csv")
+names(tmp)[1]<-c('날짜') 
+
+
+#시도명 이름 변경경
+aws %<>% mutate(시도명 = case_when(시도명=='강원도'~'강원',
+                               시도명=='경기도' ~ '경기',
+                               시도명=='경상남도' ~ '경남',
+                               시도명=='경상북도' ~ '경북',
+                               시도명=='광주광역시' ~ '광주',
+                               시도명=='대구광역시' ~'대구',
+                               시도명=='대전광역시' ~ '대전',
+                               시도명 =='부산광역시' ~ '부산', 
+                               시도명 == '서울특별시' ~ '서울', 
+                               시도명 == '세종특별시' ~ '세종',
+                               시도명 == '울산광역시' ~ '울산', 
+                               시도명 == '인천광역시' ~ '인천', 
+                               시도명 == '전라남도' ~ '전남',
+                               시도명 == '전라북도' ~ '전북',
+                               시도명 == '제주도' ~ '제주',
+                               시도명 == '충청남도' ~ '충남',
+                               시도명 == '충청북도' ~ '충북'
+                               ))
+
+
+setkey(tmp, 날짜, 시도명)
+setkey(aws, 날짜, 시도명)
+
+
+#날짜 형식 변경
+aws %<>% mutate(날짜 = parse_date_time(날짜, "Ymd"))
+
+
+#left_join(tmp,aws,by='날짜') #428,047
+
+final_배추 = aws[tmp]
+
+final_배추
+```
+##6.2. 무
+```{r}
+
+소매 = read_csv('소매시장_1621_ver2.csv', locale=locale('ko',encoding='cp949'))
+
+소매 %>% filter(품목_품종 == '무_가을' | 품목_품종 == '무_고랭지' | 품목_품종 == '무_봄' | 품목_품종 == '무_월동') %>%
+  select(가격등록일자, 시도명, 품목_품종, 단위통합_품목가격, 산물등급명) ->tmp
+
+
+
+#상품 추출
+tmp %<>% filter(산물등급명=='상품') %>%
+  select(-산물등급명)
+
+#step1) 무 컬럼 만듦
+names(tmp)[3]<- c('무')
+tmp['무']= gsub('무_','',tmp$무)
+
+#step2) 날짜 변수 랭글링
+#start_date = as.Date("2016-01-01")
+#end_date = as.Date("2021-12-31")
+#date = seq(start_date, end_date, by = "days")
+#date %<>% as.data.table
+#names(date) <-c('가격등록일자')
+#날짜형식변경
+#date %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+tmp %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+#데이터형식변경경
+tmp %<>% as.data.table()
+#tmp_merge = merge(date, tmp, by = c("가격등록일자"), all = TRUE) #[43,090 × 4]
+
+
+#가격
+tmp[,
+    mean_가격 := round(mean(단위통합_품목가격),1), 
+    by=.(가격등록일자,시도명)]
+
+tmp %<>% select(-단위통합_품목가격)
+tmp[,'품목'] = rep('무', nrow(tmp)) #품목 생성
+tmp %<>% select(-무) 
+
+tmp %<>% distinct()
+
+
+#날짜 형식 변경
+aws %<>% mutate(날짜 = parse_date_time(날짜, "Ymd"))
+
+#left_join(tmp,aws,by='날짜') #428,047
+final_무 = aws[tmp]
+```
+
+
+##6.3. 양파
+```{r}
+소매 %>% filter(품목_품종 == '양파_양파') %>%
+  select(가격등록일자, 시도명, 품목_품종, 단위통합_품목가격, 산물등급명) ->tmp
+
+
+
+#상품추출
+tmp %<>% filter(산물등급명=='상품') %>%
+  select(-산물등급명)
+
+#step1) 양파 컬럼 만듦
+names(tmp)[3]<- c('양파')
+tmp['양파']= gsub('양파_','',tmp$양파)
+
+#step2) 날짜 변수 랭글링
+#start_date = as.Date("2016-01-01")
+#end_date = as.Date("2021-12-31")
+#date = seq(start_date, end_date, by = "days")
+#date %<>% as.data.table
+#names(date) <-c('가격등록일자')
+#날짜형식변경
+#date %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+tmp %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+#데이터형식변경경
+tmp %<>% as.data.table()
+#tmp_merge = merge(date, tmp, by = c("가격등록일자"), all = TRUE) #[43,090 × 4]
+
+#가격
+tmp[,
+    mean_가격 := round(mean(단위통합_품목가격),1), 
+    by=.(가격등록일자,시도명)]
+
+tmp %<>% select(-단위통합_품목가격)
+tmp[,'품목'] = rep('양파', nrow(tmp)) #품목 생성
+tmp %<>% select(-양파) 
+
+tmp %<>% distinct()
+
+
+#날짜 형식 변경
+aws %<>% mutate(날짜 = parse_date_time(날짜, "Ymd"))
+
+#left_join(tmp,aws,by='날짜') #428,047
+final_양파 = aws[tmp]
+
+
+```
+##6.4. 마늘
+```{r}
+
+소매 %>% filter(품목_품종 == '깐마늘(국산)_깐마늘(국산)') %>%
+  select(가격등록일자, 시도명, 품목_품종, 단위통합_품목가격, 산물등급명) ->tmp
+
+#상품추출
+tmp %<>% filter(산물등급명=='상품') %>%
+  select(-산물등급명)
+
+
+#step1) 마늘 컬럼 만듦
+names(tmp)[3]<- c('마늘')
+tmp['마늘']= gsub('마늘_','',tmp$마늘)
+
+#step2) 날짜 변수 랭글링
+#start_date = as.Date("2016-01-01")
+#end_date = as.Date("2021-12-31")
+#date = seq(start_date, end_date, by = "days")
+#date %<>% as.data.table
+#names(date) <-c('가격등록일자')
+#날짜형식변경
+#date %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+tmp %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+#데이터형식변경경
+tmp %<>% as.data.table()
+#tmp_merge = merge(date, tmp, by = c("가격등록일자"), all = TRUE) #[43,090 × 4]
+
+#가격
+tmp[,
+    mean_가격 := round(mean(단위통합_품목가격),1), 
+    by=.(가격등록일자,시도명)]
+
+tmp %<>% select(-단위통합_품목가격)
+tmp[,'품목'] = rep('마늘', nrow(tmp)) #품목 생성
+tmp %<>% select(-마늘) 
+
+tmp %<>% distinct()
+
+
+#날짜 형식 변경
+aws %<>% mutate(날짜 = parse_date_time(날짜, "Ymd"))
+
+#left_join(tmp,aws,by='날짜') #428,047
+final_마늘 = aws[tmp]
+```
+
+```{r}
+final_마늘 
+
+마늘 %>% head
+```
+
+
+##6.5. 풋고추
+```{r}
+소매 %>% filter(품목_품종 == '풋고추_꽈리고추'| 품목_품종 == '풋고추_청양고추' | 품목_품종 == '풋고추_풋고추') %>%
+  select(가격등록일자, 시도명, 품목_품종, 단위통합_품목가격) ->tmp
+
+#step1) 배추 컬럼 만듦
+names(tmp)[3]<- c('고추')
+tmp['고추']= gsub('풋고추_','',tmp$고추)
+
+
+
+#step2) 날짜 변수 랭글링
+#start_date = as.Date("2016-01-01")
+#end_date = as.Date("2021-12-31")
+#date = seq(start_date, end_date, by = "days")
+#date %<>% as.data.table
+#names(date) <-c('가격등록일자')
+#날짜형식변경
+#date %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+tmp %<>% mutate(가격등록일자=parse_date_time(가격등록일자, "Ymd"))
+#데이터형식변경경
+tmp %<>% as.data.table()
+#tmp_merge = merge(date, tmp, by = c("가격등록일자"), all = TRUE) #[43,090 × 4]
+
+#가격
+tmp[,
+    mean_가격 := round(mean(단위통합_품목가격),1), 
+    by=.(가격등록일자,시도명, 고추)]
+
+tmp %<>% select(-단위통합_품목가격)
+
+
+#tmp[,'품목'] = rep('마늘', nrow(tmp)) #품목 생성
+#tmp %<>% select(-마늘) 
+
+tmp %<>% distinct()
+
+#날짜 형식 변경
+aws %<>% mutate(날짜 = parse_date_time(날짜, "Ymd"))
+
+#left_join(tmp,aws,by='날짜') #428,047
+final_고추 = aws[tmp]
+
+########################################
+aws # [705,771 × 20]
+tmp #dt [69,732 × 4]
+#########################################
+
+
+```
+
+
+
+```{r}
+
+품목_품종 == '무_가을' | 품목_품종 == '무_고랭지' | 품목_품종 == '무_봄' | 품목_품종 == '무_월동'
+
+
+```
+
+
+```{r}
+#날짜 생성
+new<-NULL
+new$가격등록일자 = rep(date$가격등록일자, each = 16)
+new %<>% as.data.table
+new$시도명 = rep(시도명, times = nrow(new)/length(시도명))
+
+setkey(tmp,가격등록일자,시도명)
+setkey(new,가격등록일자,시도명)
+tmp2 = tmp[new]
+
+#품목채우기
+tmp2[,'품목'] = rep('배추', nrow(tmp2))
+
+```
+
+
+```{r}
+
+
+
+```
+
+
+
+################################################################################################################################################
+
+```{r, 값 처리리}
+require(mice)
+시도명 = c('강원','경기','경남','경북' ,'광주','대구','대전','부산','서울','세종','울산','인천','전남','전북','제주','충북')
+tmp2[시도명 == '강원'] -> tmp2_강원
+tmp2[시도명 == '경기'] -> tmp2_경기
+tmp2[시도명 == '경남'] -> tmp2_경남
+tmp2[시도명 == '경북'] -> tmp2_경북
+tmp2[시도명 == '광주'] -> tmp2_광주
+tmp2[시도명 == '대구'] -> tmp2_대구
+tmp2[시도명 == '대전'] -> tmp2_대전
+tmp2[시도명 == '부산'] -> tmp2_부산
+tmp2[시도명 == '서울'] -> tmp2_서울
+tmp2[시도명 == '세종'] -> tmp2_세종
+tmp2[시도명 == '울산'] -> tmp2_울산
+tmp2[시도명 == '인천'] -> tmp2_인천
+tmp2[시도명 == '전남'] -> tmp2_전남
+tmp2[시도명 == '전북'] -> tmp2_전북
+tmp2[시도명 == '제주'] -> tmp2_제주
+tmp2[시도명 == '충북'] -> tmp2_충북
+
+
+
+plot_missing(tmp2_강원)   
+
+#1) 
+#2)마이스
+
+```
+
+
+
+##6.6. 시각화
+```{r 배추}
+ggplot(tmp) +
+ aes(x = 가격등록일자, y = 단위통합_품목가격, colour = 배추, group = 배추) +
+ geom_line() +
+ scale_color_hue(direction = 1) +
+ theme_minimal() +
+ facet_wrap(vars(배추))
+
+
+ggplot(tmp) +
+ aes(x = 가격등록일자, y = 단위통합_품목가격, colour = 배추) +
+ geom_line() +
+ scale_color_hue(direction = 1) +
+ theme_minimal()
+```
+
+```{r 무}
+ggplot(tmp) +
+ aes(x = 가격등록일자, y = 단위통합_품목가격, colour = 무, group = 무) +
+ geom_line() +
+ scale_color_hue(direction = 1) +
+ theme_minimal() +
+ facet_wrap(vars(무))
+
+
+ggplot(tmp) +
+ aes(x = 가격등록일자, y = 단위통합_품목가격, colour = 무) +
+ geom_line() +
+ scale_color_hue(direction = 1) +
+ theme_minimal()
+```
+
+
+
+```{r}
+final<-NULL
+final = rbind(강원,경기,경남,경북,광주,대구,대전,부산,서울,세종,울산,인천,전남,전북,제주,충북)
+
+plot_missing(final)
+
+final
+
+final %>% filter(시도명=='강원' & 배추=='월동') -> t
+
+plot_missing(tmp)
+
+
+tmp %>% filter(시도명=='강원' & 배추=='월동') %>%
+  mutate(요일 = wday(가격등록일자,label = TRUE)) 
+
+
+t 
+
+```
+
+```{r}
+final_배추
+final_무
+final_양파
+final_마늘
+
+write.csv(final_배추, "배추.csv", row.names=FALSE)
+write.csv(final_무, "무.csv", row.names=FALSE)
+
+write.csv(final_양파, "양파.csv", row.names=FALSE)
+write.csv(final_마늘, "마늘.csv", row.names=FALSE)
+
+
+
+```
+
+
+
+```{r}
+
+소매2016 = read_csv('TB_TAT_KAMIS_PRC_MK_TB-2016.csv', locale=locale('ko',encoding='cp949'))
+
+소매2016 %>% filter(PRCE_REG_YMD >'20160422' & CTNP_NM=='강원' & PDLT_NM=='배추')
+
+```
+
+```{r}
+#1) 충남
+충남<- NULL
+#1월동
+tmp_충남1 = tmp %>% filter(시도명 =='충남' & 배추=="월동")
+  
+setkey(tmp_충남1,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_충남1 = tmp_충남1[date]
+tmp_충남1[,'시도명'] = rep('충남', nrow(tmp_충남1))
+tmp_충남1[,'배추'] = rep("월동", nrow(tmp_충남1))
+
+#2고랭지
+tmp_충남2 = tmp %>% filter(시도명 =='충남' & 배추=="고랭지")
+  
+setkey(tmp_충남2,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_충남2 = tmp_충남1[date]
+tmp_충남2[,'시도명'] = rep('충남', nrow(tmp_충남2))
+tmp_충남2[,'배추'] = rep("고랭지", nrow(tmp_충남2))
+
+#3봄
+tmp_충남3 = tmp %>% filter(시도명 =='충남' & 배추=="봄")
+  
+setkey(tmp_충남3,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_충남3 = tmp_충남1[date]
+tmp_충남3[,'시도명'] = rep('충남', nrow(tmp_충남3))
+tmp_충남3[,'배추'] = rep("봄", nrow(tmp_충남3))
+
+
+
+
+```
+
+
+```{r 충남}
+#4가을
+tmp_충남4 = tmp %>% filter(시도명 =='충남' & 배추=="가을")
+  
+setkey(tmp_충남4,가격등록일자,시도명,배추)
+setkey(date,가격등록일자)
+tmp_충남4 = tmp_충남1[date]
+tmp_충남4[,'시도명'] = rep('충남', nrow(tmp_충남4))
+tmp_충남4[,'배추'] = rep("가을", nrow(tmp_충남4))
+
+
+충남=rbind(tmp_충남1,tmp_충남2,tmp_충남3,tmp_충남4)
+#충남$배추 %>% table
+
+```
+
+
+```{r}
+final = fread("aws_ver_7.csv")
+#타겟명 변경
+final %<>% rename(가격 = mean_가격)
+#names(final)
+plot_missing(final)
+```
+
+
+#7.결측치처리 및 대체체
+##7.1. asos 변수 머지
+```{r asos 데이터 로드}
+#tmp_일조일사 = fread('asos_일조일사_for_aws.csv')
+#asos_일조일사_for_aws_ver2
+
+asos_기압=fread('asos_기압_for_aws_ver3.csv')
+asos_일조일사=fread('asos_일조일사_for_aws_ver3.csv')
+asos_습도 = fread('asos_습도_for_aws_ver3.csv')
+
+names(asos_습도) = c("날짜","시도명","지점명","asos_평균_상대습도","asos_최저_상대습도")
+names(asos_기압) = c("날짜","시도명","지점명","asos_평균_현지기압","asos_최고_현지기압","asos_최저_현지기압",
+                   "asos_평균_해면기압","asos_최고_해면기압","asos_최저_해면기압")
+#현지기압 제외
+asos_기압 %<>% select(-contains('현지'))
+
+#머지
+asos = inner_join(asos_기압, asos_일조일사, by = c("날짜", "시도명", "지점명")) %>%
+              inner_join(asos_습도, by = c("날짜", "시도명", "지점명"))
+
+
+
+#값변경
+asos %<>% mutate(시도명 = case_when(시도명=='강원도'~'강원',
+                               시도명=='경기도' ~ '경기',
+                               시도명=='경상남도' ~ '경남',
+                               시도명=='경상북도' ~ '경북',
+                               시도명=='광주광역시' ~ '광주',
+                               시도명=='대구광역시' ~'대구',
+                               시도명=='대전광역시' ~ '대전',
+                               시도명 =='부산광역시' ~ '부산', 
+                               시도명 == '서울특별시' ~ '서울', 
+                               시도명 == '세종특별시' ~ '세종',
+                               시도명 == '울산광역시' ~ '울산', 
+                               시도명 == '인천광역시' ~ '인천', 
+                               시도명 == '전라남도' ~ '전남',
+                               시도명 == '전라북도' ~ '전북',
+                               시도명 == '제주도' ~ '제주',
+                               시도명 == '충청남도' ~ '충남',
+                               시도명 == '충청북도' ~ '충북'
+                               ))
+
+
+#plot_missing(asos)
+#plot_missing(asos_기압)
+#plot_missing(asos_일조일사)
+#plot_missing(asos_습도)
+
+```
+
+
+```{r}
+#청주,대전,천안 필터
+asos %>% filter(지점명 %in% c('대전','천안','청주') ) %>%
+  arrange(날짜) %>%
+  filter(날짜 > '2016-01-01' & 날짜 < '2019-05-31') -> asos_필터
+
+asos_필터 %>% select(-시도명) -> asos_필터2
+
+#가중치 변수 추가
+#asos_필터2 %>% mutate(지점명 = case_when(지점명 == '청주' ~  0.4051,
+#                                    지점명 == '대전' ~ 0.2883,
+#                                    TRUE ~ 0.3066))
+asos_필터2 %>% filter(지점명 == '청주')  %>%
+  select(-지점명) -> asos_청주
+
+asos_필터2 %>% filter(지점명 == '대전')  %>%
+  select(-지점명) -> asos_대전
+
+asos_필터2 %>% filter(지점명 == '천안')  %>%
+  select(-지점명) -> asos_천안
+
+#결측치 처리 - 스플라인 보간
+asos_청주 = na_interpolation( asos_청주 ,option = "spline")
+asos_대전 = na_interpolation( asos_대전 ,option = "spline")
+asos_천안 = na_interpolation( asos_천안 ,option = "spline")
+
+#날짜별 평균내기
+asos_청주2 = asos_청주[,
+                    lapply(.SD, function(x){x*0.4051}),
+                    by=.(날짜)]
+
+asos_대전2 = asos_대전[,
+                    lapply(.SD, function(x){x*0.2883}),
+                    by=.(날짜)]
+
+asos_천안2 = asos_천안[,
+                    lapply(.SD, function(x){x*0.3066}),
+                    by=.(날짜)]
+
+asos_필터3= as.data.table(c(asos_청주2[,2] + asos_대전2[,2] + asos_천안2[,2], 
+              asos_청주2[,3] + asos_대전2[,3] + asos_천안2[,3],
+              asos_청주2[,4] + asos_대전2[,4] + asos_천안2[,4],
+              asos_청주2[,5] + asos_대전2[,5] + asos_천안2[,5],
+              asos_청주2[,6] + asos_대전2[,6] + asos_천안2[,6],
+              asos_청주2[,7] + asos_대전2[,7] + asos_천안2[,7],
+              asos_청주2[,8] + asos_대전2[,8] + asos_천안2[,8]))
+
+
+asos_필터3$날짜 = asos_청주2$날짜
+asos_필터3 = asos_필터3[,c(8,1:7)]
+
+#세종 추가
+asos_필터3$시도명 = rep('세종', nrow(asos_필터3) )
+asos_필터3 = asos_필터3[,c(1,9,2:8)]
+
+#날짜별 머지
+asos %>% arrange(날짜, 시도명)
+```
+asos 세종 추가 완료
+
+
+```{r asos 결측치 처리 및 대체}
+#결측치로 처리
+#asos_합계_일조시간
+asos[asos_합계_일조시간 > 15, asos_합계_일조시간:= NA]
+#asos_일조율
+asos[asos_일조율 > 100, asos_일조율:= NA]
+#해면기압
+asos[asos_평균_해면기압 < 800 | asos_평균_해면기압 > 1120 , asos_평균_해면기압:= NA]
+asos[asos_최고_해면기압 < 800 | asos_최고_해면기압 > 1120, asos_최고_해면기압:= NA]
+asos[asos_최저_해면기압 < 800 | asos_최저_해면기압 > 1120, asos_최저_해면기압:= NA]
+#상대습도
+asos[asos_평균_상대습도 < 1 | asos_평균_상대습도 > 100, asos_평균_상대습도:= NA]
+asos[asos_최저_상대습도 < 1 | asos_최저_상대습도 > 100, asos_최저_상대습도:= NA]
+
+
+#지점 그룹별 결측치 대체
+dt_new %>% group_split(지점명)  %>%
+  lapply(function(x){na_interpolation(x,option = "spline")}) -> imp_list
+
+data.table::rbindlist(imp_list) -> imp
+imp %>% is.na() %>% sum # 확인
+
+#rbind(imp, asos_필터3)
+#names(asos) #dt [229,191 × 9]
+#names(asos_필터2) #dt [1,246 × 9]
+
+#대체한 데이터 지점명 상제
+imp %>% select(-지점명) -> imp2
+
+
+asos = rbindlist(list(imp2, asos_필터3), use.names = FALSE) #dt [230,437 × 9]
+
+#확인
+#asos %>% filter(시도명 =='세종') %>% arrange(날짜) %>% tail
+
+
+asos  %>% arrange(날짜,시도명)
+
+asos = asos[,
+            lapply(.SD, mean),
+            by=.(날짜, 시도명)]
+
+```
+
+#############################################################################################################
+##############################################################################################################
+ASOS완료
+#############################################################################################################
+##############################################################################################################
+
+
+```{r asos 최종 조인}
+#nrow(asos_기압) #229191
+#nrow(asos_일조일사) #263860
+#nrow(asos_습도) #229191
+
+```
+
+
+
+##7.2. asos 결측치 처리
+
+```{r eda}
+#boxplot(asos[,4])
+#boxplot(asos[,5]) #일조율
+#boxplot(asos[,6]) #asos_평균_해면기압
+#boxplot(asos[,7]) 
+#boxplot(asos[,8])
+#boxplot(asos[,9])
+#boxplot(asos[,10])
+```
+
+
+
+##7.3. 위경도 통합
+```{r 위경도 통합}
+#데이터 로드
+지점 = fread("지점_aws.csv")
+names(지점)[4] <-c('지점명')
+지점%<>%select(-지점번호)
+
+#asos %>% nrow #229191
+#조인
+mrg = left_join(asos, 지점, by = "지점명")
+names(mrg)[11:12] <-c("위도","경도")
+
+#plot_missing(merged_data2)
+mrg %>% filter(is.na(위도))
+
+```
+
+
+```{r}
+#지점  %>% filter(지점명 == '백령도') #aws에 없음.
+
+```
+
+```{r asos eda}
+
+지점_asos = fread("지점_asos.csv")
+names(지점_asos) <- c('지점번호','경도','위도','지점명')
+#지점 #692 
+#지점_asos #94
+
+#지점_asos %>% filter(지점명 == '백령도')
+
+```
+
+
+```{r tmp}
+
+지점_asos %>% arrange(지점명) %>%
+  select(지점명) -> 지점_asos_tmp
+
+지점 %>% arrange(지점명) %>%
+  select(지점명) -> 지점_aws_tmp
+
+
+지점_asos %>% arrange(지점명) %>%
+  select(지점명) -> 지점_asos_tmp
+inner_join(지점_asos_tmp, 지점_aws_tmp, by='지점명') %>% arrange(지점명)
+```
+
+
+```{r asos랑 머지}
+
+지점_asos = fread("지점_asos.csv")
+names(지점_asos) <- c('지점번호','경도','위도','지점명')
+지점_asos%<>%select(-지점번호)
+
+#asos dt [229,191 × 10]
+dt = left_join(asos, 지점_asos, by = "지점명")
+
+dt %>% filter(!is.na(위도)) -> dt_new #dt [221,903 × 12]
+dt %>% filter(지점명=='세종') -> dt_세종 #dt [1,166 × 12
+dt_new = rbind(dt_new,dt_세종) #dt [223,069 × 12]
+
+#plot_missing(dt_new)
+
+#섬제외
+dt_new %<>% filter(! (지점명 == '흑산도' | 지점명 == '울릉도' | 지점명 == '백령도')) 
+
+#위경도 제외
+dt_new %<>% select(-위도, -경도)
+
+#write.csv(dt_new, "asos_ver_7.csv", row.names=FALSE)
+
+
+plot_missing(dt_new)
+```
+
+
+
+```{R}
+#plot_missing(dt_new)
+#plot_(dt_new)
+#names(dt_new)
+#spline
+```
+
+
+```{r 결측치대체 전 eda}
+dt_new %>%  as.data.frame ->df
+
+for (j in 4:10 ) {
+  pic =  df[,j]%>%
+    ggplot_na_distribution(ylab = names(df)[j]  ) + 
+    theme_classic()+
+    theme(plot.title =  element_text(hjust = 0.5)) +
+    theme(plot.subtitle = element_text(hjust = 0.5))
+  print(pic)
+}
+```
+
+
+```{r 결측치대체}
+#지점 그룹별 결측치 대체
+dt_new %>% group_split(지점명)  %>%
+  lapply(function(x){na_interpolation(x,option = "spline")}) -> imp_list
+
+data.table::rbindlist(imp_list) -> imp
+imp %>% is.na() %>% sum # 확인
+
+
+
+#시각화
+ggplot_na_imputations(dt_new[,4], imp[,4],
+                      title = names(df)[4],
+                      subtitle = "Visualization of missing value replacements",
+                      xlab = " ",
+                      ylab = " ")
+ggplot_na_imputations(dt_new[,5], imp[,5],
+                      title = names(df)[5],
+                      subtitle = "Visualization of missing value replacements",
+                      xlab = " ",
+                      ylab = " ")
+ggplot_na_imputations(dt_new[,6], imp[,6],
+                      title = names(df)[6],
+                      subtitle = "Visualization of missing value replacements",
+                      xlab = " ",
+                      ylab = " ")
+ggplot_na_imputations(dt_new[,7], imp[,7],
+                      title = names(df)[7],
+                      subtitle = "Visualization of missing value replacements",
+                      xlab = " ",
+                      ylab = " ")
+ggplot_na_imputations(dt_new[,8], imp[,8],
+                      title = names(df)[8],
+                      subtitle = "Visualization of missing value replacements",
+                      xlab = " ",
+                      ylab = " ")
+ggplot_na_imputations(dt_new[,9], imp[,9],
+                      title = names(df)[9],
+                      subtitle = "Visualization of missing value replacements",
+                      xlab = " ",
+                      ylab = " ")
+ggplot_na_imputations(dt_new[,10], imp[,10],
+                      title = names(df)[10],
+                      subtitle = "Visualization of missing value replacements",
+                      xlab = " ",
+                      ylab = " ")
+```
+
+
+
+##7.4. asos 시도별 평균
+```{r }
+#asos데이터
+#step1) 정렬
+imp %<>% arrange(날짜)
+#step2) 지점명 제외
+imp %<>% select(-지점명)
+
+#시도별 평균
+imp_cmp = imp[,
+              lapply(.SD, mean),
+              by=.(날짜, 시도명)]
+```
+
+- ASOS 처리 완료
+
+
+```{r 시각화}
+ggplot_na_distribution(asos[시도명=='강원',asos_합계_일조시간])
+asos[,9]
+names(asos)
+```
+
+
+
+```{r}
+plot_missing(asos)
+#write.csv(asos, "asos_ver_7.csv", row.names=FALSE)
+plot_qq(asos)
+plot_histogram(asos)
+names(asos)
+```
+
+
+```{r}
+지점 = fread("지점_aws.csv")
+names(지점)[4] <-c('지점명')
+지점%<>%select(-지점번호)
+
+setkey(asos, 지점명)
+setkey(지점, 지점명)
+
+
+지점[asos]
+
+left_join(asos, 지점, by='지점명')
+
+
+asos %>% arrange(날짜)
+```
+
+##########################################################################################################
+##########################################################################################################
+##########################################################################################################
+AWS
+##########################################################################################################
+##########################################################################################################
+##########################################################################################################
+
+```{r asos+aws_tmp}
+#step1)aws 데이터 드랍
+#names(final)
+final %>% select(-contains(c('기압','일조','습도'))) ->final2
+
+#step2)머지
+final2 %>% mutate(날짜 = parse_date_time(final2, "Ymd"))
+?parse_date_time
+#날짜 형식 통일
+
+names(final2)
+setkey(final2,날짜,시도명,지점명)
+setkey(asos,날짜,시도명,지점명)
+
+
+tmp_m = asos[final2]
+
+
+plot_missing(tmp_m)
+
+
+asos %>% filter(날짜 > '2016-01-04')
+
+
+
+table(asos$시도명)
+```
+
+
+
+######################################################################################
+#8. 이상치처리
+##8.1. 관측자료물리한계검사 기준
+```{r 기온}
+#plot_boxplot(final, by='품목')
+
+#1.기온
+#step1) 베이직 eda
+#final %>% select(날짜, contains('기온'),가격) -> final_기온
+#boxplot(final_기온[,2:4])
+#step2) 월변수만들기
+final %<>% mutate(날짜 = parse_date_time(날짜, "Ymd"),
+                  월 = month(날짜))
+
+
+#step3) 월별 대체
+#tem_col = c("aws_평균_기온","aws_최고_기온", "aws_최저_기온")
+
+#12,1,2
+final[월 %in% c(12, 1, 2), ][
+  aws_평균_기온 < -35 | aws_평균_기온 >30, aws_평균_기온:= NA]
+final[월 %in% c(12, 1, 2), ][
+  aws_최고_기온 < -35 | aws_최고_기온 >30, aws_최고_기온:= NA]
+final[월 %in% c(12, 1, 2), ][
+  aws_최저_기온 < -35 | aws_최저_기온 >30, aws_최저_기온:= NA]
+
+
+#3월
+final[월 ==3, ][
+  aws_평균_기온 < -30 | aws_평균_기온 > 35, aws_평균_기온 := NA]
+final[월 ==3, ][
+  aws_최고_기온 < -30 | aws_최고_기온 > 35, aws_최고_기온 := NA]
+final[월 ==3, ][
+  aws_최저_기온 < -30 | aws_최저_기온 > 35, aws_최저_기온 := NA]
+
+  
+#4월
+final[월 ==4, ][
+  aws_평균_기온 < -20 | aws_평균_기온 > 40, aws_평균_기온 := NA]
+final[월 ==4, ][
+  aws_최고_기온 < -20 | aws_최고_기온 > 40, aws_최고_기온 := NA]
+final[월 ==4, ][
+  aws_최저_기온 < -20 | aws_최저_기온 > 40, aws_최저_기온 := NA]
+
+#5월
+final[월 ==5, ][
+  aws_평균_기온 < -10 | aws_평균_기온 > 45, aws_평균_기온 := NA]
+final[월 ==5, ][
+  aws_최고_기온 < -10 | aws_최고_기온 > 45, aws_최고_기온 := NA]
+final[월 ==5, ][
+  aws_최저_기온 < -10 | aws_최저_기온 > 45, aws_최저_기온 := NA]
+
+#6,8
+final[월 %in% c(6,8), ][
+  aws_평균_기온 < 0 | aws_평균_기온 > 45, aws_평균_기온 := NA]
+final[월 %in% c(6,8), ][
+  aws_최고_기온 < 0 | aws_최고_기온 > 45, aws_최고_기온 := NA]
+final[월 %in% c(6,8), ][
+  aws_최저_기온 < 0 | aws_최저_기온 > 45, aws_최저_기온 := NA]
+
+#7월
+final[월 ==7, ][
+  aws_평균_기온 < 5 | aws_평균_기온 > 45, aws_평균_기온 := NA]
+final[월 ==7, ][
+  aws_최고_기온 < 5 | aws_최고_기온 > 45, aws_최고_기온 := NA]
+final[월 ==7, ][
+  aws_최저_기온 < 5 | aws_최저_기온 > 45, aws_최저_기온 := NA]
+
+#9월
+final[월 ==9, ][
+  aws_평균_기온 < -10 | aws_평균_기온 > 45, aws_평균_기온 := NA]
+final[월 ==9, ][
+  aws_최고_기온 < -10 | aws_최고_기온 > 45, aws_최고_기온 := NA]
+final[월 ==9, ][
+  aws_최저_기온 < -10 | aws_최저_기온 > 45, aws_최저_기온 := NA]
+
+#10
+final[월 ==10, ][
+  aws_평균_기온 < -20 | aws_평균_기온 > 40, aws_평균_기온 := NA]
+final[월 ==10, ][
+  aws_최고_기온 < -20 | aws_최고_기온 > 40, aws_최고_기온 := NA]
+final[월 ==10, ][
+  aws_최저_기온 < -20 | aws_최저_기온 > 40, aws_최저_기온 := NA]
+
+#11
+final[월 ==11, ][
+  aws_평균_기온 < -35 | aws_평균_기온 > 35, aws_평균_기온 := NA]
+final[월 ==11, ][
+  aws_최고_기온 < -35 | aws_최고_기온 > 35, aws_최고_기온 := NA]
+final[월 ==11, ][
+  aws_최저_기온 < -35 |  aws_최저_기온 > 35, aws_최저_기온 := NA]
+
+
+#2.강수량(없음)
+#boxplot(final$aws_합계_강수량)
+#final$aws_합계_강수량 %>% summary
+
+#3. 일조시간, 일조율
+#boxplot(final$aws_합계_일조시간)
+#summary(final$aws_합계_일조시간)
+#final[aws_합계_일조시간 > 15 , aws_합계_일조시간 := NA]
+
+#boxplot(final$aws_일조율)
+#summary(final$aws_일조율)
+#quantile(final$aws_일조율, c(0.5,0.75,0.80,0.97, 0.99), na.rm=TRUE)
+#final[aws_합계_일조시간 > 15] %>% nrow / final%>% nrow
+#quantile(final$aws_합계_일조시간, c(0.97, 0.99), na.rm=TRUE)
+
+#table($aws_합계_일조시간)
+
+
+#6.풍속
+
+final%>% select(contains('풍속')) %>% summary
+
+#7.풍향
+final%>% select(contains('풍향')) %>%  summary #없음
+
+```
+- 평균기온x
+- 최고기온 Min.   :-14.70 Max.   : 58.00 -> 최고값만
+- 최저기온 Min.   :-199.90 Max.   :  31.80 ->
+
+##8.2.이상치 대체
+```{r 결측치 대체}
+#step1)asos에서 가져올 데이터 드랍
+#names(final)
+final %>% select(-contains(c('기압','일조','습도'))) ->final2
+
+#시각화
+
+
+#지점 그룹별 결측치 대체
+final2 %>% group_split(지점명)  %>%
+  lapply(function(x){na_interpolation(x,option = "spline")}) -> imp_list
+
+
+
+data.table::rbindlist(imp_list) -> imp_final2
+#imp_final2 %>% is.na() %>% sum # 확인
+
+#지점명 제외
+imp_final2 %<>% select(-지점명)
+
+
+#imp_final2 %>% arrange(날짜,시도명,품목)
+#시도별 평균
+final2_tmp = imp_final2[,
+                lapply(.SD, mean),
+                by=.(날짜, 시도명, 품목)]
+
+
+#final2_tmp  %>% arrange(날짜,시도명,품목)
+```
+
+```{r}
+#청주,대전,천안 필터
+#final2_tmp %>% filter(시도명 %in% c('대전','충북','충남') ) %>%
+#  arrange(날짜) %>%
+#  filter(날짜 > '2016-01-01' & 날짜 < '2016-11-01') -> aws_필터
+
+#aws_필터 %>% select(날짜,시도명, contains('aws')) -> aws_필터2
+
+#가중치 변수 추가
+#asos_필터2 %>% mutate(지점명 = case_when(지점명 == '청주' ~  0.4051,
+#                                    지점명 == '대전' ~ 0.2883,
+#                                    TRUE ~ 0.3066))
+#aws_필터2 %>% filter(시도명 == '충북')  %>%
+#  select(-시도명) -> aws_충북
+
+#aws_필터2 %>% filter(시도명 == '대전')  %>%
+#  select(-시도명) -> aws_대전
+
+#aws_필터2 %>% filter(시도명 == '충남')  %>%
+#  select(-시도명) -> aws_충남
+
+#결측치 처리 - 스플라인 보간
+#aws_충북 = na_interpolation( aws_충북 ,option = "spline")
+#aws_대전 = na_interpolation(aws_대전 ,option = "spline")
+#aws_충남 = na_interpolation(aws_충남 ,option = "spline")
+
+#날짜별 평균내기
+#aws_충북2 = aws_충북[,
+#                    lapply(.SD, function(x){x*0.4051}),
+#                    by=.(날짜)] #dt [1,246 × 8]
+
+#aws_충북2 = aws_충북2[,
+#                  lapply(.SD, mean),
+#                  by=.(날짜)]
+
+
+#aws_대전2 = aws_대전[,
+#                    lapply(.SD, function(x){x*0.2883}),
+#                    by=.(날짜)] # dt [3,958 × 8]
+
+#aws_대전2 = aws_대전2[,
+#                  lapply(.SD, mean),
+#                  by=.(날짜)]
+
+
+#aws_충남2 = aws_충남[,
+#                    lapply(.SD, function(x){x*0.3066}),
+#                    by=.(날짜)]
+
+
+#aws_필터3 = as.data.table(c(aws_충북2[,2] + aws_대전2[,2],
+#                         aws_충북2[,3] + aws_대전2[,3],
+#                         aws_충북2[,4] + aws_대전2[,4],
+#                         aws_충북2[,5] + aws_대전2[,5],
+#                         aws_충북2[,6] + aws_대전2[,6],
+#                         aws_충북2[,7] + aws_대전2[,7],
+#                        aws_충북2[,8] + aws_대전2[,8]))
+
+
+#aws_필터3$날짜 = aws_충북2$날짜
+#aws_필터3 = aws_필터3[,c(8,1:7)]
+
+#세종 추가
+#aws_필터3$시도명 = rep('세종', nrow(aws_필터3) )
+#aws_필터3 = aws_필터3[,c(1,9,2:8)]
+
+#날짜별 머지
+
+
+
+#final2_tmp  %>% filter(시도명 =='세종') %>% arrange(날짜)
+
+#aws_필터3
+
+#table(final2_tmp$품목)
+#c('감자', '당근', '딸기', '마늘', '무', '배추', '붉은고추', '상추', '생강', '수박', '시금', '쌀', '양배추',
+#'양파', '오이', '참외', '토마토', '파', '팥', '풋고추', '호박',  '흰콩') 
+
+#final2_tmp %>% filter(시도명 == '세종') -> 세종_tmp
+
+
+#combined_data <- rbindlist(list(final2_tmp, aws_필터3), fill = TRUE) 
+
+#combined_data %>% filter(시도명 == '세종') %>% arrange(날짜)
+
+#table(세종_tmp$품목) %>% nrow()
+#table(final2_tmp$품목) %>% nrow()
+#table(final2_tmp$시도명)
+
+
+final2_tmp %>% filter(시도명 == '대전') %>% 
+  filter(날짜<)
+```
+
+
+
+```{r aws+asos 최종머지}
+asos #asos #[217,079 × 9]
+final2_tmp # aws # [429,747 × 12]
+
+final2_tmp %>% arrange(날짜,시도명) #:dt [429,747 × 12]
+asos %>% arrange(날짜,시도명)
+
+join_tmp = left_join(final2_tmp, asos, by=c('날짜','시도명'))   #2,291,691 × 19
+
+#plot_missing(join_tmp)
+
+```
+
+
+```{r}
+join_tmp = join_tmp[,c(1,12,2:3,4:10,13:19,11)]
+#write.csv(join_tmp, "final.csv", row.names=FALSE)
+```
+
+
+#9.파생변수 생성성
+```{r}
+final = join_tmp
+final 
+plot_histogram(join_tmp$aws_최다_풍향) 
+```
+
+
+```{r 풍향, 요일, 계절}
+#풍향변경
+final %<>% mutate(aws_최다_풍향 = case_when(aws_최다_풍향>22.5 & aws_최다_풍향 <= 67.5 ~ '북동',
+                                        aws_최다_풍향>67.5 & aws_최다_풍향 <= 112.5 ~ '동',
+                                        aws_최다_풍향>112.5 & aws_최다_풍향 <= 157.5 ~ '남동',
+                                        aws_최다_풍향>157.5 & aws_최다_풍향 <= 202.5 ~ '남',
+                                        aws_최다_풍향>202.5 & aws_최다_풍향 <= 247.5 ~ '남서',
+                                        aws_최다_풍향>247.5 & aws_최다_풍향 <= 292.5 ~ '서',
+                                        aws_최다_풍향>292.5 & aws_최다_풍향 <= 337.5 ~ '북서',
+                                        TRUE ~ '북'
+                                        )) 
+
+#날짜
+
+#계절함수정의의
+seasons = function(x){ 
+  if(x %in% 2:4) return('봄') 
+  if(x %in% 5:7) return('여름') 
+  if(x %in% 8:10) return('가을') 
+  if(x %in% c(11,12,1)) return('겨울') 
+} 
+final %<>% mutate(요일 = wday(날짜, label=TRUE))
+final$계절 = sapply(final$월, seasons)
+```
+```{r 일교차}
+names(final)
+final$aws_일교차 = final$aws_최고_기온 - final$aws_최저_기온
+```
+
+
+```{r 강수유무}
+#음수 0처리
+final$aws_합계_강수량 = ifelse(final$aws_합계_강수량<0, 0,final$aws_합계_강수량)  
+final$aws_합계_강수량  %>% summary
+
+
+#강수유무
+final$aws_강수_유무 = ifelse(final$aws_합계_강수량==0 , 0 ,1)  
+```
+
+```{r}
+final$품종명
+
+final$품목 %>% table %>% View()
+```
+
+
+```{r 시각화화}
+
+
+final %>%
+ filter(!(시도명 %in% c("경기", "강원", "경북", "경남"))) %>%
+ ggplot() +
+ aes(x = 날짜, y = aws_평균_기온, fill = 시도명, colour = 시도명, group = 시도명) +
+ geom_line() +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ theme_minimal() +
+ facet_wrap(vars(시도명), scales = "free_y")
+
+
+ggplot(final) +
+ aes(x = 날짜, y = 가격, fill = 품목, colour = 품목, group = 품목) +
+ geom_line() +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ theme_minimal() +
+ facet_wrap(vars(품목), 
+ scales = "free_y")
+
+ggplot(final) +
+ aes(x = 월, y = 가격, fill = 품목, colour = 품목, group = 품목) +
+ geom_point(shape = "circle", 
+ size = 1.5) +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ theme_minimal() +
+ facet_wrap(vars(품목), scales = "free_y")
+
+ggplot(final) +
+ aes(x = 요일, y = 가격, fill = 품목, colour = 품목) +
+ geom_boxplot() +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ theme_minimal() +
+ facet_wrap(vars(품목), scales = "free_y")
+
+final %>% filter( 시도명 == '세종') %>% arrange(날짜)
+
+
+```
+
+
+```{r}
+
+write.csv(final, "final_ver_2.csv", row.names=FALSE)
+```
+
+```{r 월별평균온도}
+#시도별, 월별 평균 온도
+#step1)연도
+final %<>% mutate(연도 = year(날짜))
+
+
+
+final[,
+      계절_온도 :=mean(aws_평균_기온),
+      by=.(시도명, 연도,월)]
+
+
+
+write.csv(final, "final_ver_3.csv", row.names=FALSE)
+```
+
+
+
+```{R 시차변수}
+setwd("C:/Users/alsdu/Downloads/")
+final = fread('final_ver_5.csv')
+
+
+final %<>%
+  mutate(lag1_aws_평균_기온 = lag(aws_평균_기온, 1),
+         lag2_aws_평균_기온 = lag(aws_평균_기온, 2),
+         lag3_aws_평균_기온 = lag(aws_평균_기온, 3),
+         lag4_aws_평균_기온 = lag(aws_평균_기온, 4),
+         lag5_aws_평균_기온 = lag(aws_평균_기온, 5),
+         lag6_aws_평균_기온 = lag(aws_평균_기온, 6),
+         lag7_aws_평균_기온 = lag(aws_평균_기온, 7),
+         lag14_aws_평균_기온 = lag(aws_평균_기온, 14),
+         lag21_aws_평균_기온 = lag(aws_평균_기온, 21),
+         lag28_aws_평균_기온 = lag(aws_평균_기온, 28))
+
+
+final %<>%
+  mutate(lag1_aws_합계_강수량 = lag(aws_합계_강수량, 1),
+         lag2_aws_합계_강수량 = lag(aws_합계_강수량, 2),
+         lag3_aws_합계_강수량 = lag(aws_합계_강수량, 3),
+         lag4_aws_합계_강수량 = lag(aws_합계_강수량, 4),
+         lag5_aws_합계_강수량 = lag(aws_합계_강수량, 5),
+         lag6_aws_합계_강수량 = lag(aws_합계_강수량, 6),
+         lag7_aws_합계_강수량 = lag(aws_합계_강수량, 7),
+         lag14_aws_합계_강수량 = lag(aws_합계_강수량, 14),
+         lag21_aws_합계_강수량 = lag(aws_합계_강수량, 21),
+         lag28_aws_합계_강수량 = lag(aws_합계_강수량, 28))
+
+
+final %<>%
+  mutate(lag1_aws_평균_풍속 = lag(aws_평균_풍속, 1),
+         lag2_aws_평균_풍속 = lag(aws_평균_풍속, 2),
+         lag3_aws_평균_풍속 = lag(aws_평균_풍속, 3),
+         lag4_aws_평균_풍속 = lag(aws_평균_풍속, 4),
+         lag5_aws_평균_풍속 = lag(aws_평균_풍속, 5),
+         lag6_aws_평균_풍속 = lag(aws_평균_풍속, 6),
+         lag7_aws_평균_풍속 = lag(aws_평균_풍속, 7),
+         lag14_aws_평균_풍속 = lag(aws_평균_풍속, 14),
+         lag21_aws_평균_풍속 = lag(aws_평균_풍속, 21),
+         lag28_aws_평균_풍속 = lag(aws_평균_풍속, 28))
+
+
+final %<>%
+  mutate(lag1_asos_평균_해면기압 = lag(asos_평균_해면기압, 1),
+         lag2_asos_평균_해면기압 = lag(asos_평균_해면기압, 2),
+         lag3_asos_평균_해면기압 = lag(asos_평균_해면기압, 3),
+         lag4_asos_평균_해면기압 = lag(asos_평균_해면기압, 4),
+         lag5_asos_평균_해면기압 = lag(asos_평균_해면기압, 5),
+         lag6_asos_평균_해면기압 = lag(asos_평균_해면기압, 6),
+         lag7_asos_평균_해면기압 = lag(asos_평균_해면기압, 7),
+         lag14_asos_평균_해면기압 = lag(asos_평균_해면기압, 14),
+         lag21_asos_평균_해면기압 = lag(asos_평균_해면기압, 21),
+         lag28_asos_평균_해면기압 = lag(asos_평균_해면기압, 28))
+
+
+final %<>%
+  mutate(lag1_asos_합계_일조시간 = lag(asos_합계_일조시간, 1),
+         lag2_asos_합계_일조시간 = lag(asos_합계_일조시간, 2),
+         lag3_asos_합계_일조시간 = lag(asos_합계_일조시간, 3),
+         lag4_asos_합계_일조시간 = lag(asos_합계_일조시간, 4),
+         lag5_asos_합계_일조시간 = lag(asos_합계_일조시간, 5),
+         lag6_asos_합계_일조시간 = lag(asos_합계_일조시간, 6),
+         lag7_asos_합계_일조시간 = lag(asos_합계_일조시간, 7),
+         lag14_asos_합계_일조시간 = lag(asos_합계_일조시간, 14),
+         lag21_asos_합계_일조시간 = lag(asos_합계_일조시간, 21),
+         lag28_asos_합계_일조시간 = lag(asos_합계_일조시간, 28))
+
+
+final %<>%
+  mutate(lag1_asos_평균_상대습도 = lag(asos_평균_상대습도, 1),
+         lag2_asos_평균_상대습도 = lag(asos_평균_상대습도, 2),
+         lag3_asos_평균_상대습도 = lag(asos_평균_상대습도, 3),
+         lag4_asos_평균_상대습도 = lag(asos_평균_상대습도, 4),
+         lag5_asos_평균_상대습도 = lag(asos_평균_상대습도, 5),
+         lag6_asos_평균_상대습도 = lag(asos_평균_상대습도, 6),
+         lag7_asos_평균_상대습도 = lag(asos_평균_상대습도, 7),
+         lag14_asos_평균_상대습도 = lag(asos_평균_상대습도, 14),
+         lag21_asos_평균_상대습도 = lag(asos_평균_상대습도, 21),
+         lag28_asos_평균_상대습도 = lag(asos_평균_상대습도, 28))
+
+```
+
+
+```{r 주요변수 7, 14일 평균균}
+
+final[, aws_평균_기온_7일평균 := frollmean(aws_평균_기온, 7, na.rm = TRUE)]
+final[, asos_평균_해면기압_7일평균 := frollmean(asos_평균_해면기압, 7, na.rm = TRUE)]
+final[, aws_합계_강수량_7일평균 := frollmean(aws_합계_강수량, 7, na.rm = TRUE)]
+final[, aws_평균_풍속_7일평균 := frollmean(aws_평균_풍속, 7, na.rm = TRUE)]  
+
+final[, aws_평균_기온_14일평균 := frollmean(aws_평균_기온, 14, na.rm = TRUE)]
+final[, asos_평균_해면기압_14일평균 := frollmean(asos_평균_해면기압, 14, na.rm = TRUE)]
+final[, aws_합계_강수량_14일평균 := frollmean(aws_합계_강수량, 14, na.rm = TRUE)]
+final[, aws_평균_풍속_14일평균 := frollmean(aws_평균_풍속, 14, na.rm = TRUE)]  
+  
+```
+
+```{r 레그 na 변경}
+
+write.csv(final, "final_ver_6.csv", row.names=FALSE)
+
+```
+
+
+```{R}
+
+names(final) #dt [429,747
+plot_intro(final)
+
+final[is.na(final)] <- 0 
+
+
+data[is.na(data)] <- 0
+
+write.csv(final, "final_ver_7.csv", row.names=FALSE)
+
+```
+
+```{r}
+
+final %>% filter(날짜 > '2021-01-01') -> test #dt [72,256 × 99]
+final %>% filter(날짜 < '2021-01-01') -> train #dt [357,491 × 99
+
+
+write.csv(test, "test.csv", row.names = FALSE)
+write.csv(train, "train.csv", row.names = FALSE)
+```
+
+
+#10. EDA
+##10.1.숫자형
+```{r}
+setwd("C:/Users/alsdu/Downloads/")
+dt = fread("final_ver_7.csv")
+
+#일조율 범위
+dt$asos_일조율 = ifelse(dt$asos_일조율<0, 0, dt$asos_일조율)
+dt$asos_일조율 = ifelse(dt$asos_일조율>100, 100, dt$asos_일조율)
+#시금->시금치
+dt$품목 = ifelse(dt$품목=='시금','시금치',dt$품목)
+
+table(dt$품목)
+```
+
+
+```{r}
+#write.csv(dt, "final_ver_9.csv", row.names=FALSE)
+```
+
+```{r 품목필터링}
+dt_감자=dt[품목=='감자']
+dt_당근=dt[품목=='당근']
+dt_딸기=dt[품목=='딸기']
+dt_마늘=dt[품목=='마늘']
+dt_무=dt[품목=='무']
+dt_배추=dt[품목=='배추']
+dt_붉은고추=dt[품목=='붉은고추']
+dt_상추=dt[품목=='상추']
+dt_생강=dt[품목=='생강']
+dt_수박=dt[품목=='수박']
+
+
+dt_시금치=dt[품목=='시금치']
+dt_쌀=dt[품목=='쌀']
+dt_양배추=dt[품목=='양배추']
+dt_양파=dt[품목=='양파']
+dt_오이=dt[품목=='오이']
+dt_참외=dt[품목=='참외']
+dt_토마토=dt[품목=='토마토']
+
+dt_파=dt[품목=='파']
+dt_팥=dt[품목=='팥']
+dt_풋고추=dt[품목=='풋고추']
+dt_호박=dt[품목=='호박']
+dt_흰콩=dt[품목=='흰콩']
+
+write.csv(dt_감자, 'dt_감자.csv', row.names=FALSE)
+write.csv(dt_당근, 'dt_당근.csv', row.names=FALSE)
+write.csv(dt_딸기, 'dt_딸기.csv', row.names=FALSE)
+write.csv(dt_마늘, 'dt_마늘.csv', row.names=FALSE)
+write.csv(dt_무, 'dt_무.csv', row.names=FALSE)
+write.csv(dt_배추, 'dt_배추.csv', row.names=FALSE)
+write.csv(dt_붉은고추, 'dt_붉은고추.csv', row.names=FALSE)
+write.csv(dt_상추, 'dt_상추.csv', row.names=FALSE)
+write.csv(dt_생강, 'dt_생강.csv', row.names=FALSE)
+write.csv(dt_수박, 'dt_수박.csv', row.names=FALSE)
+write.csv(dt_시금치, 'dt_시금치.csv', row.names=FALSE)
+write.csv(dt_쌀, 'dt_쌀.csv', row.names=FALSE)
+write.csv(dt_양배추, 'dt_양배추.csv', row.names=FALSE)
+
+write.csv(dt_양파, 'dt_양파.csv', row.names=FALSE)
+write.csv(dt_오이, 'dt_오이.csv', row.names=FALSE)
+write.csv(dt_참외, 'dt_참외.csv', row.names=FALSE)
+write.csv(dt_토마토, 'dt_토마토.csv', row.names=FALSE)
+write.csv(dt_파, 'dt_파.csv', row.names=FALSE)
+write.csv(dt_파, 'dt_팥.csv', row.names=FALSE)
+write.csv(dt_풋고추, 'dt_풋고추.csv', row.names=FALSE)
+write.csv(dt_호박, 'dt_호박.csv', row.names=FALSE)
+write.csv(dt_흰콩, 'dt_흰콩.csv', row.names=FALSE)
+
+
+```
+
+```{r}
+plot_correlation(dt)
+
+```
+
+
+##10.1.범주형
+```{r}
+#캐릭터형 뽑기
+dt %>% select(날짜,년도,월,일,요일, 계절, 시도명, 품목, aws_최다_풍향, 가격) -> dt_char
+dt_char$년도 %<>% as.factor()
+dt_char$월 %<>% as.factor()
+dt_char$일 %<>% as.factor()
+dt_char$요일 %<>% as.factor()
+dt_char$계절 %<>% as.factor()
+dt_char$시도명 %<>% as.factor()
+dt_char$품목 %<>% as.factor()
+dt_char$aws_최다_풍향 %<>% as.factor()
+
+dt_char %<>% mutate(날짜 = parse_date_time(날짜, "Ymd"))
+```
+
+
+```{r}
+#년도별 가격 분포
+
+ggplot(dt_char) +
+ aes(x = 가격, fill = 년도, colour = 년도) +
+ geom_density(adjust = 1L) +
+ scale_fill_brewer(palette = "BrBG", 
+ direction = 1) +
+ scale_color_brewer(palette = "BrBG", direction = 1) +
+ labs(x = " ", y = " ", 
+ title = "년도별 가격 분포") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 25L, face = "bold"), 
+ plot.caption = element_text(size = 15L), axis.title.x = element_text(size = 20L, face = "bold"))
+
+
+
+
+
+ggplot(dt_char) +
+ aes(x = 월, y = 가격, fill = 품목, colour = 품목) +
+ geom_boxplot() +
+ scale_fill_manual(values = c(감자 = "#F8766D", 
+당근 = "#E98043", 딸기 = "#DB8B19", 마늘 = "#C99500", 무 = "#B19E00", 배추 = "#99A700", 붉은고추 = "#69AE0F", 
+상추 = "#31B425", 생강 = "#00BA3C", 수박 = "#00BC64", 시금 = "#00BF8B", 쌀 = "#00BFAB", 양배추 = "#00BCC5", 
+양파 = "#00B9DF", 오이 = "#20AFEC", 참외 = "#45A4F6", 토마토 = "#6C98FE", 파 = "#9B88FD", 팥 = "#C978FB", 
+풋고추 = "#E36DED", 호박 = "#F167D8", 흰콩 = "#FF61C3")) +
+ scale_color_manual(values = c(감자 = "#F8766D", 
+당근 = "#E98043", 딸기 = "#DB8B19", 마늘 = "#C99500", 무 = "#B19E00", 배추 = "#99A700", 붉은고추 = "#69AE0F", 
+상추 = "#31B425", 생강 = "#00BA3C", 수박 = "#00BC64", 시금 = "#00BF8B", 쌀 = "#00BFAB", 양배추 = "#00BCC5", 
+양파 = "#00B9DF", 오이 = "#20AFEC", 참외 = "#45A4F6", 토마토 = "#6C98FE", 파 = "#9B88FD", 팥 = "#C978FB", 
+풋고추 = "#E36DED", 호박 = "#F167D8", 흰콩 = "#FF61C3")) +
+ labs(title = "품목별 가격 분포", 
+ subtitle = "(1월-12월)") +
+ theme_gray() +
+ theme(legend.position = "none", plot.title = element_text(size = 18L, 
+ face = "bold"), plot.subtitle = element_text(size = 14L)) +
+ facet_wrap(vars(품목), scales = "free_y")
+library(dplyr)
+library(ggplot2)
+
+dt_char %>%
+ filter(품목 %in% c("배추", "붉은고추", "상추", "생강", "수박")) %>%
+ ggplot() +
+ aes(x = 품목, y = 가격, fill = 년도, colour = 년도) +
+ geom_boxplot() +
+ scale_fill_brewer(palette = "YlGnBu", 
+ direction = 1) +
+ scale_color_brewer(palette = "YlGnBu", direction = 1) +
+ labs(x = " ", y = " ", 
+ title = "품목별 가격 분포", subtitle = "(2016-2021)") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 20L, 
+ face = "bold"), plot.subtitle = element_text(size = 13L), axis.title.x = element_text(size = 16L))
+
+dt_char %>%
+ filter(품목 %in% c("감자", "당근", "딸기", "마늘", "무")) %>%
+ ggplot() +
+ aes(x = 품목, y = 가격, fill = 년도, colour = 년도) +
+ geom_boxplot() +
+ scale_fill_brewer(palette = "YlGnBu", 
+ direction = 1) +
+ scale_color_brewer(palette = "YlGnBu", direction = 1) +
+ labs(x = " ", y = " ", 
+ title = "품목별 가격 분포", subtitle = "(2016-2021)") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 20L, 
+ face = "bold"), plot.subtitle = element_text(size = 13L), axis.title.x = element_text(size = 16L))
+
+ggplot(dt_char) +
+ aes(x = 품목, y = 가격, fill = 년도, colour = 년도) +
+ geom_boxplot() +
+ scale_fill_brewer(palette = "YlGnBu", 
+ direction = 1) +
+ scale_color_brewer(palette = "YlGnBu", direction = 1) +
+ labs(x = " ", y = " ", 
+ title = "품목별 가격 분포", subtitle = "(2016-2021)") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 20L, 
+ face = "bold"), plot.subtitle = element_text(size = 13L), axis.title.x = element_text(size = 16L))
+
+ggplot(dt_char) +
+ aes(x = 품목, y = 가격, fill = 년도, colour = 년도) +
+ geom_boxplot() +
+ scale_fill_brewer(palette = "YlGnBu", 
+ direction = 1) +
+ scale_color_brewer(palette = "YlGnBu", direction = 1) +
+ labs(x = " ", y = " ", 
+ title = "품목별 가격 분포", subtitle = "(2016-2021)") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 20L, 
+ face = "bold"), plot.subtitle = element_text(size = 13L), axis.title.x = element_text(size = 16L))
+```
+
+```{r}
+
+dt_char %>%
+ filter(품목 %in% "쌀") %>%
+ ggplot() +
+ aes(x = 가격, fill = 시도명, colour = 시도명, group = 시도명) +
+ geom_density(adjust = 1L) +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ theme_gray() +
+ theme(plot.title = element_text(size = 22L, 
+ face = "bold"), axis.title.x = element_text(size = 20L, face = "bold")) +
+ facet_wrap(vars(품목))
+dt_char
+```
+
+
+#11. 최종 피처엔지니어링
+##11.1. 생산량 합치기
+```{r}
+#setwd("C:/Users/alsdu/Downloads/")
+#dt_tmp = fread("merged_data2.csv")
+#is.na(dt_tmp$생산비) %>% sum
+
+
+dt = fread("final_ver_9.csv")
+생산량 = fread("생산량_final_ver_7.csv")
+#dt_tmp = left_join(dt,생산량, by=c("년도","시도명","품목") )
+#dt_tmp[is.na(값),]$품목 %>% table
+
+
+#plot_intro(생산량)
+#생산량
+```
+
+
+
+```{r 컬럼순서수정}
+dt %<>% select(-연도)
+#write.csv(dt , "final_ver_10.csv", row.names=FALSE)
+
+#names(dt)
+
+dt %>% select(가격,날짜,년도,계절,월,일,요일,시도명,품목,
+              aws_평균_기온, aws_최고_기온, aws_최저_기온, aws_합계_강수량,aws_평균_풍속,
+              aws_최고_풍속, aws_최다_풍향, asos_평균_해면기압, asos_최고_해면기압, 
+              asos_최저_해면기압, asos_합계_일조시간, asos_일조율, asos_평균_상대습도, asos_최저_상대습도,
+              aws_일교차,aws_강수_유무,계절_온도) ->dt_tmp
+
+dt_tmp = cbind(dt_tmp,dt[,c(27:98)])
+#dt_tmp
+```
+
+```{r 생산비 조인}
+dt_cmp = left_join(dt_tmp,생산량, by=c("년도","시도명","품목") )
+dt_cmp
+#write.csv(dt_cmp,"final_ver_10.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+names(dt_cmp)
+dt_tmp = dt_cmp[,c(1:30)]
+
+dt_cmp %>% select(값) -> dt_값
+dt_tmp = cbind(dt_값, dt_tmp)
+```
+
+
+
+
+```{r 가중치 반영}
+
+#names(dt1)
+
+#1. 일별,품목별 가중치 총합을 구한다
+#2. a*(지역가중치/일별.품목별 가중치총합)
+#3. 일별 sum
+
+
+#1
+dt_tmp[,
+       sum_가중치 :=sum(값), 
+       by=.(품목,날짜)]
+
+
+#2
+dt_tmp2 = dt_tmp[, lapply(.SD, function(x) {
+  if (is.numeric(x)) {
+    x * 값 / sum_가중치
+  } else {
+    x
+  }
+})]
+
+
+
+#dt_tmp[is.numeric(),
+#    lapply(.SD,function(x){x*값/sum_가중치})]
+#dt_tmp[is.numeric(),]
+
+#asos_청주2 = asos_청주[,
+#                    lapply(.SD, function(x){x*0.4051}),
+#                    by=.(날짜)]
+
+
+#imp_cmp = imp[,
+#              lapply(.SD, mean),
+#              by=.(날짜, 시도명)]
+
+#tmp[,
+#    mean_가격 := round(mean(단위통합_품목가격),1), 
+#    by=.(가격등록일자,시도명)]
+```
+
+
+
+
+
+##11.2 상관분석 
+```{r}
+#names(dt_cmp)
+dt1 = dt_cmp[,c(1:30)]
+#날짜형식변경
+dt1%<>%mutate(날짜=parse_date_time(날짜, "Ymd"))
+#skim(dt1)
+```
+
+
+```{r 시각화 리포트}
+create_report(dt1)
+create_report(dt1,
+              output_format = html_document(toc = TRUE, toc_depth = 10, theme = "yeti"),
+              y = "가격",
+              report_title = "Data Profiling Report-With Target")
+
+```
+
+
+```{r 일 }
+dt1$일 %>% table %>% as.data.frame %>% arrange(-Freq)
+
+```
+
+###11.2.1 품목별 eda
+```{r 데이터테이블만들기}
+dt1_감자=dt1[품목=='감자']
+dt1_당근=dt1[품목=='당근']
+dt1_딸기=dt1[품목=='딸기']
+dt1_마늘=dt1[품목=='마늘']
+dt1_무=dt1[품목=='무']
+dt1_배추=dt1[품목=='배추']
+dt1_붉은고추=dt1[품목=='붉은고추']
+dt1_상추=dt1[품목=='상추']
+dt1_생강=dt1[품목=='생강']
+dt1_수박=dt1[품목=='수박']
+
+
+dt1_시금치=dt1[품목=='시금치']
+dt1_쌀=dt1[품목=='쌀']
+dt1_양배추=dt1[품목=='양배추']
+dt1_양파=dt1[품목=='양파']
+dt1_오이=dt1[품목=='오이']
+dt1_참외=dt1[품목=='참외']
+dt1_토마토=dt1[품목=='토마토']
+dt1_파=dt1[품목=='파']
+dt1_팥=dt1[품목=='팥']
+dt1_풋고추=dt1[품목=='풋고추']
+dt1_호박=dt1[품목=='호박']
+dt1_흰콩=dt1[품목=='흰콩']
+```
+
+```{r 시각화 리포트}
+create_report(dt1_감자,
+              y = "가격",
+              report_title = "가격-감자")
+create_report(dt1_당근,
+              y = "가격",
+              report_title = "가격-당근")
+create_report(dt1_딸기,
+              y = "가격",
+              report_title = "가격-딸기")
+create_report(dt1_마늘,
+              y = "가격",
+              report_title = "가격-마늘")
+create_report(dt1_무,
+              y = "가격",
+              report_title = "가격-무")
+create_report(dt1_배추,
+              y = "가격",
+              report_title = "가격-배추")
+create_report(dt1_붉은고추,
+              y = "가격",
+              report_title = "가격-붉은고추")
+create_report(dt1_상추,
+              y = "가격",
+              report_title = "가격-상추")
+create_report(dt1_생강,
+              y = "가격",
+              report_title = "가격-생강")
+create_report(dt1_수박,
+              y = "가격",
+              report_title = "가격-수박")
+create_report(dt1_시금치,
+              y = "가격",
+              report_title = "가격-시금치")
+create_report(dt1_쌀,
+              y = "가격",
+              report_title = "가격-쌀")
+create_report(dt1_양배추,
+              y = "가격",
+              report_title = "가격-양배추")
+create_report(dt1_양파,
+              y = "가격",
+              report_title = "가격-양파")
+create_report(dt1_오이,
+              y = "가격",
+              report_title = "가격-오이")
+create_report(dt1_참외,
+              y = "가격",
+              report_title = "가격-참외")
+create_report(dt1_토마토,
+              y = "가격",
+              report_title = "가격-토마토")
+create_report(dt1_파,
+              y = "가격",
+              report_title = "가격-파")
+create_report(dt1_팥,
+              y = "가격",
+              report_title = "가격-팥")
+create_report(dt1_풋고추,
+              y = "가격",
+              report_title = "가격-풋고추")
+create_report(dt1_호박,
+              y = "가격",
+              report_title = "가격-호박")
+create_report(dt1_흰콩,
+              y = "가격",
+              report_title = "가격-흰콩")
+
+
+```
+
+
+```{r}
+plot_correlation(dt1)
+```
+
+##11.3 타겟 이상치 처리
+```{r}
+#plot_boxplot(dt1_감자)
+```
+
+
+```{r}
+#boxplot(dt1_감자$가격)
+#plot_histogram(dt1_감자$가격)
+```
+
+
+```{r}
+
+
+ggplot(dt1) +
+ aes(x = 가격, fill = 품목, colour = 품목) +
+ geom_histogram(bins = 30L) +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ labs(title = "품목별 가격 분포") +
+ theme_gray() +
+ theme(legend.position = "none", 
+ plot.title = element_text(size = 20L, face = "bold")) +
+ facet_wrap(vars(품목), scales = "free")
+```
+
+
+```{r qqplot}
+plot_qq(dt1$가격)
+```
+
+##11.4 정규성 확인
+```{r}
+# 필요한 패키지 로드
+library(ggplot2)
+library(stats)
+
+# 데이터프레임에서 품목별 가격 데이터를 선택합니다.
+item_prices <- dt1$가격
+
+# QQ 플롯 그리기
+qqnorm(item_prices)
+qqline(item_prices, col = "red")
+title("품목별 가격 QQ 플롯")
+```
+
+
+```{R 시각화}
+require(ggplot2)
+require(ggpubr) #시각화
+require(ggExtra)
+require(stats)
+
+# 데이터프레임에서 품목과 가격 데이터를 선택합니다.
+item_prices <- dt1$가격
+items <- dt1$품목
+
+# 데이터프레임 생성
+data <- data.frame(item = items, price = item_prices)
+
+# 품목별로 가격 분포의 QQ 플롯 그리기
+ggqqplot(data, 
+         x = "price", 
+         facet.by = "item", 
+         fill = "item", 
+         point.color = "black",
+         conf.level = 0.95,
+         scales = "free_y")+
+  theme_gray()
+  
+
+
+```
+
+```{r 품목별 가격 QQplot}
+ggplot(data, aes(sample = price, color = item)) +
+  geom_qq() +
+  geom_qq_line() +
+  facet_wrap(~ item, scales = "free_y")+
+  labs(title = "품목별 가격 QQplot", x = "", y = "") +
+  theme(legend.position = "none", 
+        plot.title = element_text(size = 15L, face = "bold"))
+```
+
+
+
+```{r 정규정 테스트}
+#install.packages("nortest")
+
+# 품목별로 정규성 검정 수행
+#results <- NULL
+#for (item in unique(data$item)) {
+#  subset_data <- data[data$item == item, "price"]
+#  shapiro_test <- shapiro.test(subset_data)
+#  results <- rbind(results, c(item, shapiro_test$statistic, shapiro_test$p.value))
+#}
+
+# 품목별로 정규성 검정 수행 (Kolmogorov-Smirnov 검정)
+results <- NULL
+for (item in unique(data$item)) {
+  subset_data <- data[data$item == item, "price"]
+  ad_test <- ad.test(subset_data)
+  results <- rbind(results, c(item, ks_test$statistic, ks_test$p.value))
+}
+
+#출력
+colnames(results) <- c("품목", "통계량", "p-value")
+results
+```
+
+
+```{r 타겟 이상값 수정}
+감자_in = quantile(dt1[품목=='감자', '가격']$가격, probs=c(0.003, 0.997))[1]
+감자_out = quantile(dt1[품목=='감자', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='감자' & 가격<감자_in, 가격:=감자_in]
+dt1[품목=='감자' & 가격>감자_out, 가격:=감자_out]
+
+당근_in = quantile(dt1[품목=='당근', '가격']$가격, probs=c(0.003, 0.997))[1]
+당근_out = quantile(dt1[품목=='당근', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='당근' & 가격<당근_in, 가격:=당근_in]
+dt1[품목=='당근' & 가격>당근_out, 가격:=당근_out]
+
+딸기_in = quantile(dt1[품목=='딸기', '가격']$가격, probs=c(0.003, 0.997))[1]
+딸기_out = quantile(dt1[품목=='딸기', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='딸기' & 가격<딸기_in, 가격:=딸기_in]
+dt1[품목=='딸기' & 가격>딸기_out, 가격:=딸기_out]
+
+마늘_in = quantile(dt1[품목=='마늘', '가격']$가격, probs=c(0.003, 0.997))[1]
+마늘_out = quantile(dt1[품목=='마늘', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='마늘' & 가격<마늘_in, 가격:=마늘_in]
+dt1[품목=='마늘' & 가격>마늘_out, 가격:=마늘_out]
+
+무_in = quantile(dt1[품목=='무', '가격']$가격, probs=c(0.003, 0.997))[1]
+무_out = quantile(dt1[품목=='무', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='무' & 가격<무_in, 가격:=무_in]
+dt1[품목=='무' & 가격>무_out, 가격:=무_out]
+
+배추_in = quantile(dt1[품목=='배추', '가격']$가격, probs=c(0.003, 0.997))[1]
+배추_out = quantile(dt1[품목=='배추', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='배추' & 가격<배추_in, 가격:=배추_in]
+dt1[품목=='배추' & 가격>배추_out, 가격:=배추_out]
+
+붉은고추_in = quantile(dt1[품목=='붉은고추', '가격']$가격, probs=c(0.003, 0.997))[1]
+붉은고추_out = quantile(dt1[품목=='붉은고추', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='붉은고추' & 가격<붉은고추_in, 가격:=붉은고추_in]
+dt1[품목=='붉은고추' & 가격>붉은고추_out, 가격:=붉은고추_out]
+
+상추_in = quantile(dt1[품목=='상추', '가격']$가격, probs=c(0.003, 0.997))[1]
+상추_out = quantile(dt1[품목=='상추', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='상추' & 가격<상추_in, 가격:=상추_in]
+dt1[품목=='상추' & 가격>상추_out, 가격:=상추_out]
+
+생강_in = quantile(dt1[품목=='생강', '가격']$가격, probs=c(0.003, 0.997))[1]
+생강_out = quantile(dt1[품목=='생강', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='생강' & 가격<생강_in, 가격:=생강_in]
+dt1[품목=='생강' & 가격>생강_out, 가격:=생강_out]
+
+수박_in = quantile(dt1[품목=='수박', '가격']$가격, probs=c(0.003, 0.997))[1]
+수박_out = quantile(dt1[품목=='수박', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='수박' & 가격<수박_in, 가격:=수박_in]
+dt1[품목=='수박' & 가격>수박_out, 가격:=수박_out]
+
+시금치_in = quantile(dt1[품목=='시금치', '가격']$가격, probs=c(0.003, 0.997))[1]
+시금치_out = quantile(dt1[품목=='시금치', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='시금치' & 가격<시금치_in, 가격:=시금치_in]
+dt1[품목=='시금치' & 가격>시금치_out, 가격:=시금치_out]
+
+쌀_in = quantile(dt1[품목=='쌀', '가격']$가격, probs=c(0.003, 0.997))[1]
+쌀_out = quantile(dt1[품목=='쌀', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='쌀' & 가격<쌀_in, 가격:=쌀_in]
+dt1[품목=='쌀' & 가격>쌀_out, 가격:=쌀_out]
+
+
+양배추_in = quantile(dt1[품목=='양배추', '가격']$가격, probs=c(0.003, 0.997))[1]
+양배추_out = quantile(dt1[품목=='양배추', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='양배추' & 가격<양배추_in, 가격:=양배추_in]
+dt1[품목=='양배추' & 가격>양배추_out, 가격:=양배추_out]
+
+양파_in = quantile(dt1[품목=='양파', '가격']$가격, probs=c(0.003, 0.997))[1]
+양파_out = quantile(dt1[품목=='양파', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='양파' & 가격<양파_in, 가격:=양파_in]
+dt1[품목=='양파' & 가격>양파_out, 가격:=양파_out]
+
+오이_in = quantile(dt1[품목=='오이', '가격']$가격, probs=c(0.003, 0.997))[1]
+오이_out = quantile(dt1[품목=='오이', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='오이' & 가격<오이_in, 가격:=오이_in]
+dt1[품목=='오이' & 가격>오이_out, 가격:=오이_out]
+
+참외_in = quantile(dt1[품목=='참외', '가격']$가격, probs=c(0.003, 0.997))[1]
+참외_out = quantile(dt1[품목=='참외', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='참외' & 가격<참외_in, 가격:=참외_in]
+dt1[품목=='참외' & 가격>참외_out, 가격:=참외_out]
+
+토마토_in = quantile(dt1[품목=='토마토', '가격']$가격, probs=c(0.003, 0.997))[1]
+토마토_out = quantile(dt1[품목=='토마토', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='토마토' & 가격<토마토_in, 가격:=토마토_in]
+dt1[품목=='토마토' & 가격>토마토_out, 가격:=토마토_out]
+
+파_in = quantile(dt1[품목=='파', '가격']$가격, probs=c(0.003, 0.997))[1]
+파_out = quantile(dt1[품목=='파', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='파' & 가격<파_in, 가격:=파_in]
+dt1[품목=='파' & 가격>파_out, 가격:=파_out]
+
+팥_in = quantile(dt1[품목=='팥', '가격']$가격, probs=c(0.003, 0.997))[1]
+팥_out = quantile(dt1[품목=='팥', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='팥' & 가격<팥_in, 가격:=팥_in]
+dt1[품목=='팥' & 가격>팥_out, 가격:=팥_out]
+
+풋고추_in = quantile(dt1[품목=='풋고추', '가격']$가격, probs=c(0.003, 0.997))[1]
+풋고추_out = quantile(dt1[품목=='풋고추', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='풋고추' & 가격<풋고추_in, 가격:=풋고추_in]
+dt1[품목=='풋고추' & 가격>풋고추_out, 가격:=풋고추_out]
+
+호박_in = quantile(dt1[품목=='호박', '가격']$가격, probs=c(0.003, 0.997))[1]
+호박_out = quantile(dt1[품목=='호박', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='호박' & 가격<호박_in, 가격:=호박_in]
+dt1[품목=='호박' & 가격>호박_out, 가격:=호박_out]
+
+흰콩_in = quantile(dt1[품목=='흰콩', '가격']$가격, probs=c(0.003, 0.997))[1]
+흰콩_out = quantile(dt1[품목=='흰콩', '가격']$가격, probs=c(0.003, 0.997))[2]
+dt1[품목=='흰콩' & 가격<흰콩_in, 가격:=흰콩_in]
+dt1[품목=='흰콩' & 가격>흰콩_out, 가격:=흰콩_out]
+```
+
+
+```{r 이상값 수정 후 그래프}
+#1.히스토그램
+
+ggplot(dt1) +
+ aes(x = 가격, fill = 품목, colour = 품목) +
+ geom_histogram(bins = 30L) +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ labs(x = " ", y = " ", title = "품목별 가격 분포", subtitle = "이상치 제거 후") +
+ theme_gray() +
+ theme(legend.position = "none", plot.title = element_text(size = 18L, face = "bold"), 
+ plot.subtitle = element_text(size = 14L)) +
+ facet_wrap(vars(품목), scales = "free")
+#2.박스플랏
+
+ggplot(dt1) +
+ aes(x = 품목, y = 가격, fill = 품목, colour = 품목) +
+ geom_boxplot() +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ labs(x = " ", y = " ", title = "품목별 가격 분포", subtitle = "이상치 제거 후") +
+ theme_gray() +
+ theme(legend.position = "none", plot.title = element_text(size = 20L))
+```
+
+```{r}
+#plot_correlation(dt1)
+#step1) 뉴메릭 변수 출력
+
+
+num = dt1[, .SD, .SDcols = sapply(dt1, is.numeric)]
+
+# cor 함수로 상관계수 행렬 계산
+cor_matrix = cor(num)
+
+# 상관계수가 일정 임계값 이상인 변수 선택
+threshold = 0.5  # 상관계수 임계값 설정
+cor_vars = colnames(cor_matrix)[rowSums(abs(cor_matrix) >= threshold) > 1]
+
+
+cor_vars = c(cor_vars)
+
+
+# 선택된 변수만으로 데이터프레임 생성
+selected_data = dt1[, ..cor_vars]
+
+# 선택된 변수들 간의 상관계수 시각화
+plot_correlation(selected_data)
+```
+
+```{r 기온만 따로 뗴서 보기기}
+dt1[, ..cor_vars] %>% select(contains('기온'),가격,품목) ->dt1_기온
+
+#require(caret)
+#install.packages("caret")
+#install.packages("lattice")
+
+
+featurePlot(x = dt1_기온, 
+            y = dt1$가격, 
+            plot = "scatter", 
+            layout = c(3, 1))
+
+
+plot_scatterplot(dt1_기온, by='가격')
+dt=cbind(dt1_기온, dt1$가격)
+```
+
+
+##11.5 로그변환
+```{r 히스토그램으로 분포 확인}
+selected_data %>% select(-contains('사인')) -> num
+plot_histogram(num)
+```
+
+```{r 변환후}
+log_transform(num)
+
+
+plot_histogram(log_transform(num))
+plot_histogram(log1p(num))
+
+
+log_trns = log_transform(num)
+log1p_trns = log1p(num)
+plot_missing(log_trns)
+plot_missing(log1p_trns)
+```
+로그변환했는데 결측치 생김
+aws_최고_기온
+계절_온도
+aws_평균_기온
+aws_최저_기온
+=> 음수 확인 
+
+
+```{r 로그변환함수만들기}
+#summary(num)
+
+log_transform = function(x) {
+  if (any(x < 0)) {
+    min_value <- abs(min(x)) + 1
+    log_value <- log1p(min_value + x)
+  } else {
+    log_value <- log1p(x)
+  }
+  return(log_value)
+}
+
+
+plot_missing(log_transform(num))
+```
+
+```{r}
+plot_histogram(num)
+plot_histogram(log_transform(num))
+```
+
+##11.6 로그변환
+```{r}
+dt1[, asos_최저_상대습도:=log_transform(asos_최저_상대습도) ]
+dt1[, aws_일교차:=log_transform(aws_일교차) ]
+```
+
+##11.7 시각화 
+```{r 범주형 바이올린 차트}
+
+
+char = dt1[,
+           .SD,
+           .SDcols = sapply(dt1, is.character)]
+
+
+
+char = cbind(char, dt1$가격)
+names(char)[6]= c('가격')
+
+
+
+ggplot(char) +
+ aes(x = 계절, y = 가격, fill = 계절, colour = 계절) +
+ geom_violin(adjust = 1L, 
+ scale = "area") +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ labs(title = "계절별 가격 분포") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 15L, face = "bold"))
+
+ggplot(char) +
+ aes(x = 요일, y = 가격, fill = 요일, colour = 요일) +
+ geom_violin(adjust = 1L, 
+ scale = "area") +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ labs(title = "요일별 가격 분포") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 15L, face = "bold"))
+
+ggplot(char) +
+ aes(x = 시도명, y = 가격, fill = 시도명, colour = 시도명) +
+ geom_violin(adjust = 1L, 
+ scale = "area") +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ labs(title = "시도별 가격 분포", 
+ subtitle = "품목별") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 15L, face = "bold")) +
+ facet_wrap(vars(품목), scales = "free")
+
+ggplot(char) +
+ aes(x = 시도명, y = 가격, fill = 시도명, colour = 시도명) +
+ geom_violin(adjust = 1L, 
+ scale = "area") +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ labs(title = "시도별 가격 분포", 
+ subtitle = "품목별") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 15L, face = "bold")) +
+ facet_wrap(vars(품목), scales = "free")
+
+ggplot(char) +
+ aes(x = aws_최다_풍향, y = 가격, fill = aws_최다_풍향, colour = aws_최다_풍향) +
+ geom_violin(adjust = 1L, scale = "width") +
+ scale_fill_hue(direction = 1) +
+ scale_color_hue(direction = 1) +
+ labs(title = "풍향별 가격 분포", subtitle = "품목별") +
+ theme_gray() +
+ theme(plot.title = element_text(size = 15L, 
+ face = "bold")) +
+ facet_wrap(vars(품목), scales = "free")
+```
+
+
+
+
+#12. 원핫인코딩
+```{r}
+#dt1 %>% str
+dt1_dmmy = dummy_cols( .data= dt1, select_columns=c("년도","계절","요일","시도명","aws_최다_풍향") , remove_first_dummy=  FALSE, remove_selected_columns=TRUE )
+```
+
+
+```{r 최종 데이터 전 합치기기}
+new = cbind(dt1_dmmy,dt_cmp[,-c(1:30)])
+names(new)
+```
+
+
+#13. 가중치 반영
+```{r}
+names(dt1)
+
+#1. 일별,품목별 가중치 총합을 구한다
+#2. a*(지역가중치/일별.품목별 가중치총합)
+#3. 일별 sum
+
+#0
+#step1)
+new %>% select(contains(c('값','날짜','가격','품목','asos','aws')),
+                          "월","일","계절_온도","월_코사인","일_코사인","월_사인","일_사인") -> new1
+
+#step2)풍향제외
+new1 %>% select(-contains('풍향')) -> new1
+
+##############################################################################
+##############################################################################
+#step1)제외
+new %>% select(-contains(c('값','날짜','가격','품목','asos','aws')),
+                          -"월",-"일",-"계절_온도",-"월_코사인",-"일_코사인",-"월_사인",-"일_사인") -> new_tmp
+#step2)풍향포함
+new %>% select(contains('풍향')) -> new_풍향
+new_tmp = cbind(new_tmp,new_풍향)
+
+#names(new_tmp)
+#names(new1)
+
+new1 %<>% mutate(날짜=parse_date_time(날짜,"Ymd"))
+#1
+new1[,
+    sum_가중치 :=sum(값), 
+    by=.(품목,날짜)]
+
+
+
+#2
+new2 = new1[, lapply(.SD, function(x) {
+  if (is.numeric(x)) {
+    x * 값 / sum_가중치
+  } else {
+    x
+  }
+})]
+
+```
+
+
+```{r 결측확인}
+#na컬럽확인
+#new2[apply(new2, 1, function(row) any(is.na(row)))]
+
+#수치확인
+#round((597/429747)*100,2)  #0.14
+```
+
+
+```{R}
+#NA -> 0으로
+#new2[is.na(new2),]
+#names(new2)
+#new2[is.na(new2)] <- 0
+#is.na(new2) %>% sum
+#new1[값==0,]
+
+
+new2 = new2[complete.cases(new2),]
+
+
+#3
+#3. 일별 sum
+new3= new2[, 
+           lapply(.SD, function(x) {
+             if (is.numeric(x)) {
+               sum(x)} 
+             else {x}
+             }),
+           by=.(품목,날짜)
+]
+
+
+#컬럼 제외
+new3 %>% select(-값, -sum_가중치) ->new4
+
+new4
+
+#dt_tmp[is.numeric(),
+#    lapply(.SD,function(x){x*값/sum_가중치})]
+#dt_tmp[is.numeric(),]
+
+#asos_청주2 = asos_청주[,
+#                    lapply(.SD, function(x){x*0.4051}),
+#                    by=.(날짜)]
+
+
+#imp_cmp = imp[,
+#              lapply(.SD, mean),
+#              by=.(날짜, 시도명)]
+
+#tmp[,
+#    mean_가격 := round(mean(단위통합_품목가격),1), 
+#    by=.(가격등록일자,시도명)]
+
+
+```
+
+#14. 정규화
+```{r 정규화}
+#step2. 스케일링
+#함수정의
+minMax = function(x){
+  (x-min(x)) / (max(x)-min(x))
+}
+
+
+
+new5 = new4[, 
+            lapply(.SD, function(x){
+              if (is.numeric(x)) {
+                x = minMax(x)}
+              else {x}
+              })
+            ]
+
+
+new5 %<>% select(-가격)
+new5$가격 = new4$가격
+
+
+new6 = new5[,c(93,1:92)]
+
+
+
+
+cbind(new6, new_tmp)
+
+
+
+#step1)제외
+new %>% select(-contains(c('가격','asos','aws')),
+                          -"월",-"일",-"계절_온도",-"월_코사인",-"일_코사인",-"월_사인",-"일_사인") -> new_tmp
+#step2)풍향포함
+new %>% select(contains('풍향')) -> new_풍향
+new_tmp = cbind(new_tmp,new_풍향)
+
+
+new_tmp2 = distinct(new_tmp, 날짜, 품목, .keep_all = TRUE) %>% arrange(날짜,품목) 
+
+fi_0808 = cbind(new6,new_tmp2)
+
+#write.csv(fi_0808, "final_ver_11.csv", row.names=FALSE)
+write.csv(fi_0808, "final_ver_14.csv", row.names=FALSE)
+
+```
+
+
+```{r 중복컬럼제외}
+fi_0809 = fi_0808[,-c(94,95,127)] 
+write.csv(fi_0809, "final_ver_14.csv", row.names=FALSE)
+```
+
+#15. 분할
+```{r}
+fi_0809 %>% filter(날짜 > '2021-01-01') -> test4 #dt [72,256 × 99]
+fi_0809 %>% filter(날짜 < '2021-01-01') -> train4 #dt [357,491 × 99
+
+
+write.csv(test4, "test_ver_4.csv", row.names = FALSE)
+write.csv(train4, "train_ver_4.csv", row.names = FALSE)
+
+```
+
+
+
+
+```{r}
+#fi_0808 %>% filter(날짜 > '2021-01-01') -> test2 #dt [72,256 × 99]
+#fi_0808 %>% filter(날짜 < '2021-01-01') -> train2 #dt [357,491 × 99
+
+
+#write.csv(test2, "test_ver_2.csv", row.names = FALSE)
+#write.csv(train2, "train_ver_2.csv", row.names = FALSE)
+```
+
+
