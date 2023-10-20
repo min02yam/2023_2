@@ -1,0 +1,606 @@
+---
+title: "회귀분석"
+author: "김민영"
+date: "2023년 8월 29일 화요일"
+---
+
+
+
+```{r 패키지설정}
+require(readr) #데이터 로드
+require(readxl) #데이터 로드
+require(dplyr) #랭글링
+require(data.table) #랭글링
+require(magrittr) #파이프라인 생성
+require(skimr) #EDA
+require(ggplot2) #시각화
+require(esquisse) #시각화
+require(DataExplorer) #시각화
+require(lubridate) #날짜파싱
+require(stringr) #문자파싱
+require(naniar) #결측치
+require(VIM) #결측치 시각화
+require(imputeTS) #시계열 결측치
+require(fastDummies) #더미변수 생성
+require(corrplot) #상관분석
+require(nortest) #정규성검정
+require(leaps) #회귀
+
+```
+
+
+
+# 0드랍
+```{r}
+#dt %>% filter(값==0) -> dt_tmp
+#dt_tmp %>%
+#  arrange(가격) %>%
+#  select(값, 가격,품목, aws_평균_기온,asos_최저_상대습도 )
+#names(dt_tmp)
+#write.csv(dt2, "final_ver_13.csv", row.names=FALSE)
+#dt %>% filter( asos_평균_해면기압 == 0)
+#names(dt)
+```
+
+
+
+```{r 데이터로드}
+dt=fread("final_ver_14.csv")
+
+#dt %>% filter(날짜 > '2021-01-01') -> test2 #dt [72,256 × 99]
+#dt %>% filter(날짜 < '2021-01-01') -> train2 #dt [357,491 × 99
+
+#write.csv(test2, "test_ver_2.csv", row.names = FALSE)
+#write.csv(train2, "train_ver_2.csv", row.names = FALSE)
+
+#0드랍 데이터 테스트 트레인 드랍
+#dt2 %>% filter(날짜 > '2021-01-01') -> test3 #dt [72,256 × 99]
+#dt2 %>% filter(날짜 < '2021-01-01') -> train3 #dt [357,491 × 99
+#write.csv(test3, "test_ver_3.csv", row.names = FALSE)
+#write.csv(train3, "train_ver_3.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+dt1_감자=dt1[품목=='감자']
+dt1_당근=dt1[품목=='당근']
+dt1_딸기=dt1[품목=='딸기']
+dt1_마늘=dt1[품목=='마늘']
+dt1_무=dt1[품목=='무']
+dt1_배추=dt1[품목=='배추']
+dt1_붉은고추=dt1[품목=='붉은고추']
+dt1_상추=dt1[품목=='상추']
+dt1_생강=dt1[품목=='생강']
+dt1_수박=dt1[품목=='수박']
+
+
+dt1_시금치=dt1[품목=='시금치']
+dt1_쌀=dt1[품목=='쌀']
+dt1_양배추=dt1[품목=='양배추']
+dt1_양파=dt1[품목=='양파']
+dt1_오이=dt1[품목=='오이']
+dt1_참외=dt1[품목=='참외']
+dt1_토마토=dt1[품목=='토마토']
+
+dt1_파=dt1[품목=='파']
+dt1_팥=dt1[품목=='팥']
+dt1_풋고추=dt1[품목=='풋고추']
+dt1_호박=dt1[품목=='호박']
+dt1_흰콩=dt1[품목=='흰콩']
+```
+
+
+
+```{r}
+dt_tmp = dt[,c(1:10,43:50)]
+#dt %>% names
+dt_tmp2 = dt_tmp[,-c(2:3)]
+pairs(dt_tmp2)
+
+pairs(dt_tmp2)
+```
+
+
+```{r 상관분석}
+data2.cor<-cor(dt[,-c(2:3)]) 
+corrplot(data2.cor, 
+         method="number",  
+         type = "lower" ,
+         addCoef.col = "black",  
+         tl.col = "black", 
+         tl.srt = 45, 
+         diag = F) 
+```
+
+
+#주성분분석석
+```{r 주성분 분석}
+##2. 주성분 분석
+require(psych)
+#(1) 성분 추출
+pca<-principal(data.norm[,-1], rotate="none")   ;  pca
+#(2) 남길 성분 수 결정  -> 4개
+plot(pca$values, type="b", ylab="Eigenvalues", xlabs="Component") 
+#(3)남은 성분 회전
+pca.rotate<-principal(data.norm[,-1], nfactors=4, rotate="varimax" ) ; pca.rotate 
+#각 성분 기여도 높은 변수 확인 스크리 플랏에서 4로 정한 이유
+#(변화율이 줄어드는 지점, 이 성분을 추가함으로서 분산의 증가에 큰 차이를 보이지 않음), 
+#nfacror3,4,5 비교 했을때 4가 ((rmsr값이 가장 작으면서)), 동시에 카이스퀘어 값의 피벨루가 가장 작았음.
+#각 성분 기여도 높은 변수 확인
+#(3)회전된 결과 해석
+#각5개의 성분에 관한 변수의 기여도, 성분1은 - 와 - 변수의 성분에 관한 기여도가 높은 양의값
+#(4)요인점수생성: 관찰값의 변수의 값*그 변수의 성분에 관한 기여도: 각 관찰값이 회전된 성분과 관련 있는 정도
+scores<-data.frame(pca.rotate$scores)
+head(scores)
+scores$target<-data.norm$유입량
+###샘플링#########################################
+####train, validation set 생성
+library(caret)
+part<-createDataPartition(scores$target, times=1, p=0.7)
+parts<-as.vector(part$Resample1)
+train<-scores[parts,]
+vali<-scores[-parts,]
+###########################################
+#(1)회귀 적합
+
+
+library(leaps) #최량
+sub.bic<-regsubsets(lm, method="bic")
+
+summary(lm)   #두개만 유의하게 나옴
+par(mfrow=c(2,2))
+plot(lm)
+
+```
+
+
+
+#1. 잔차분석
+```{r}
+lm1 = lm(가격~., dt[,-c(2:3)])
+#summary(lm1)
+par(mfrow=c(2,2))
+plot(lm1)
+
+#dt
+```
+
+- 1. (잔차의 등분산성) 로에스와 레퍼런스 라인과 비교해서 linear함-> 만족족
+- 2. (잔차의 정규성)정규성 만족 x 
+- 3. (잔차 분산의 일정성) 로에스가 약간 반등하지만 심각하진 않음 1.5보다 작으므로 일단 위험하지 않다고 판단
+- 4. ()쿡스디스턴스, 레버리지 기준 아웃라이어 존재하지 않음
+
+- 레버리지는 독립변수의 각 관측치가 독립변수들의 평균에서 떨어진 정도를 반영하는
+- 통계량으로, 0과 1 사이 값을 가지며, 일반적으로 레버리지 평균의 2~4배를 초과하는 관
+- 관측치를 이상치로 정의한다. 
+
+
+
+
+```{r}
+step(lm1)
+```
+
+
+
+
+
+```{r 레버리지 줄이기}
+step(lm1)
+```
+
+
+```{r}
+
+
+fit2 = lm(formula = 가격 ~ asos_합계_일조시간 + asos_평균_상대습도 + 
+    asos_최저_상대습도 + aws_평균_기온 + aws_최저_기온 + 
+    aws_합계_강수량 + aws_평균_풍속 + aws_최고_풍속 + 
+    aws_강수_유무 + lag28_aws_평균_기온 + lag28_aws_평균_풍속 + 
+    aws_평균_풍속_14일평균 + 월 + 계절_온도 + 월_코사인 + 
+    월_사인 + 년도_2016 + 년도_2017 + 년도_2018 + 년도_2019 + 
+    년도_2020 + 계절_가을 + 계절_겨울 + 요일_월 + 
+    시도명_경기 + 시도명_전북 + aws_최다_풍향_남 + 
+    aws_최다_풍향_남서 + aws_최다_풍향_북동 + aws_최다_풍향_북서, 
+    data = dt[, -c(2:3)])
+
+summary(fit2)
+```
+
+
+
+```{r 최량부분집합}
+require(leaps)
+fit3=regsubsets(가격 ~ asos_합계_일조시간 + asos_평균_상대습도 + 
+    asos_최저_상대습도 + aws_평균_기온 + aws_최저_기온 + 
+    aws_합계_강수량 + aws_평균_풍속 + aws_최고_풍속 + 
+    aws_강수_유무 + lag28_aws_평균_기온 + lag28_aws_평균_풍속 + 
+    aws_평균_풍속_14일평균 + 월 + 계절_온도 + 월_코사인 + 
+    월_사인 + 년도_2016 + 년도_2017 + 년도_2018 + 년도_2019 + 
+    년도_2020 + 계절_가을 + 계절_겨울 + 요일_월 + 
+    시도명_경기 + 시도명_전북 + aws_최다_풍향_남 + 
+    aws_최다_풍향_남서 + aws_최다_풍향_북동 + aws_최다_풍향_북서, 
+    data = dt[, -c(2:3)])
+
+names( summary(fit3) )  
+
+summary(fit3)$cp
+
+plot(fit3, scale="Cp")   # RC1 RC3 RC4 
+
+plot(fit3, scale="bic")  # RC1 RC3 RC4 
+
+which.min( summary(fit3)$bic ) 
+
+
+```
+
+
+
+
+```{r}
+#1 1차 변수 셀렉션
+plot(fit2)
+```
+
+```{r}
+fit3= lm(가격~lag28_aws_평균_풍속+aws_평균_풍속_14일평균+년도_2016+년도_2017+년도_2020+계절_가을+계절_겨울, dt[, -c(2:3)])
+plot(fit3)
+
+```
+
+#2. 품목별로 다시 하기
+##2-1. 마늘늘
+```{r}
+dt_마늘 = dt[품목=='마늘',-c(2:3)] 
+
+fit_마늘 = lm(가격~., dt_마늘)
+plot(fit_마늘)
+
+```
+
+```{r}
+step(fit_마늘)
+#step(lm1)
+```
+
+```{r}
+fit_마늘2=lm(formula = 가격 ~ asos_합계_일조시간 + asos_평균_상대습도 +
+    lag14_asos_평균_해면기압 + lag1_asos_합계_일조시간 +
+    lag3_asos_합계_일조시간 + lag5_asos_합계_일조시간 +
+    lag14_asos_합계_일조시간 + lag21_asos_합계_일조시간 +
+    lag28_asos_합계_일조시간 + lag21_asos_평균_상대습도 +
+    lag28_asos_평균_상대습도 + asos_평균_해면기압_14일평균 +
+    aws_평균_기온 + aws_최고_기온 + aws_강수_유무 +
+    lag14_aws_평균_기온 + lag28_aws_평균_기온 + lag28_aws_합계_강수량 +
+    lag14_aws_평균_풍속 + aws_평균_기온_14일평균 +
+    계절_온도 + 월_코사인 + 계절_봄 + 요일_금 +
+    요일_목 + 시도명_서울 + aws_최다_풍향_남 + aws_최다_풍향_남동 +
+    aws_최다_풍향_남서 + aws_최다_풍향_동 + aws_최다_풍향_북동,
+    data = dt_마늘)
+
+summary(fit_마늘2)
+
+
+```
+
+```{r 최량부분집합}
+
+fit_마늘3=regsubsets(가격 ~ asos_합계_일조시간 + asos_평균_상대습도 +
+    lag14_asos_평균_해면기압 + lag1_asos_합계_일조시간 +
+    lag3_asos_합계_일조시간 + lag5_asos_합계_일조시간 +
+    lag14_asos_합계_일조시간 + lag21_asos_합계_일조시간 +
+    lag28_asos_합계_일조시간 + lag21_asos_평균_상대습도 +
+    lag28_asos_평균_상대습도 + asos_평균_해면기압_14일평균 +
+    aws_평균_기온 + aws_최고_기온 + aws_강수_유무 +
+    lag14_aws_평균_기온 + lag28_aws_평균_기온 + lag28_aws_합계_강수량 +
+    lag14_aws_평균_풍속 + aws_평균_기온_14일평균 +
+    계절_온도 + 월_코사인 + 계절_봄 + 요일_금 +
+    요일_목 + 시도명_서울 + aws_최다_풍향_남 + aws_최다_풍향_남동 +
+    aws_최다_풍향_남서 + aws_최다_풍향_동 + aws_최다_풍향_북동,
+    data = dt_마늘)
+
+
+names( summary(fit_마늘3) )
+
+summary(fit_마늘3)$cp
+
+plot(fit_마늘3, scale="Cp")   # RC1 RC3 RC4 
+plot(fit_마늘3, scale="bic")  # R5
+
+
+
+#cp
+fit_마늘_cp=lm(가격 ~  asos_평균_해면기압_14일평균+aws_평균_기온_14일평균+계절_온도+월_코사인+계절_봄+aws_최다_풍향_남동+aws_최다_풍향_동, data = dt_마늘)
+
+#bic
+fit_마늘_bic=lm(가격 ~ 월_코사인+계절_봄+aws_최다_풍향_남동+aws_최다_풍향_동+aws_최다_풍향_북동, data = dt_마늘)
+summary(fit_마늘_cp)
+
+```
+
+- cp: asos_평균_해면기압_14일평균+aws_평균_기온_14일평+계절_온도+월_코사인+계절_봄+aws_최다_풍향_남동+aws_최다_풍향_동
+- bic: 가격 ~ 월_코사인+계절_봄+aws_최다_풍향_남동+aws_최다_풍향_동+aws_최다_풍향_북동
+
+
+## 2-2. 무
+```{r}
+dt_무 = dt[품목=='무',-c(2:3)] 
+
+fit_무 = lm(가격~., dt_무)
+par(mfrow=c(2,2))
+plot(fit_무)
+
+
+#셀렉션
+step(fit_무)
+
+#셀렉션1
+fit_무2=lm(formula = 가격 ~ asos_평균_해면기압 + asos_최저_해면기압 + 
+    asos_일조율 + lag14_asos_평균_해면기압 + lag21_asos_평균_해면기압 + 
+    lag28_asos_평균_해면기압 + lag7_asos_합계_일조시간 + 
+    lag7_asos_평균_상대습도 + lag28_asos_평균_상대습도 + 
+    aws_합계_강수량 + aws_일교차 + aws_강수_유무 + 
+    lag21_aws_평균_기온 + lag28_aws_합계_강수량 + lag14_aws_평균_풍속 + 
+    lag21_aws_평균_풍속 + aws_합계_강수량_14일평균 + 
+    aws_평균_풍속_14일평균 + 계절_온도 + 월_코사인 + 
+    월_사인 + 년도_2020 + 계절_가을 + 계절_겨울 + 
+    요일_금 + 요일_목 + 요일_수 + 요일_월 + aws_최다_풍향_남 + 
+    aws_최다_풍향_남서, data = dt_무)
+
+summary(fit_무2)
+
+#최량부분집합
+fit_무3=regsubsets(가격 ~ asos_평균_해면기압 + asos_최저_해면기압 + 
+    asos_일조율 + lag14_asos_평균_해면기압 + lag21_asos_평균_해면기압 + 
+    lag28_asos_평균_해면기압 + lag7_asos_합계_일조시간 + 
+    lag7_asos_평균_상대습도 + lag28_asos_평균_상대습도 + 
+    aws_합계_강수량 + aws_일교차 + aws_강수_유무 + 
+    lag21_aws_평균_기온 + lag28_aws_합계_강수량 + lag14_aws_평균_풍속 + 
+    lag21_aws_평균_풍속 + aws_합계_강수량_14일평균 + 
+    aws_평균_풍속_14일평균 + 계절_온도 + 월_코사인 + 
+    월_사인 + 년도_2020 + 계절_가을 + 계절_겨울 + 
+    요일_금 + 요일_목 + 요일_수 + 요일_월 + aws_최다_풍향_남 + 
+    aws_최다_풍향_남서, data = dt_무)
+
+
+names( summary(fit_무3) )
+
+summary(fit_무3)$cp
+
+plot(fit_무3, scale="Cp")   # RC1 RC3 RC4 
+plot(fit_무3, scale="bic")  # R5
+
+
+
+#cp
+fit_무_cp=lm(가격 ~ aws_일교차+aws_합계_강수량_14일평균+aws_평균_풍속_14일평균+계절_온도+월_코사인+년도_2020+요일_목+요일_수 , data = dt_무)
+
+#bic
+fit_무_bic=lm(가격 ~ ,  data = dt_무)
+
+summary(fit_무_cp)
+
+```
+-cp: aws_일교차+aws_합계_강수량_14일평균+aws_평균_풍속_14일평균+계절_온도+월_코사인+년도_2020+요일_목+요일_수
+-bic: aws_일교차+aws_합계_강수량_14일평균+aws_평균_풍속_14일평균+계절_온도+월_코사인+년도_2020+요일_목+요일_수
+
+## 2-3. 배추
+```{r}
+dt_배추 = dt[품목=='배추',-c(2:3)] 
+
+fit_배추 = lm(가격~., dt_배추)
+par(mfrow=c(2,2))
+plot(fit_배추)
+
+
+#셀렉션
+step(fit_배추)
+
+#셀렉션1
+fit_배추2=lm(formula = 가격 ~ asos_평균_해면기압 + asos_최저_해면기압 + 
+    asos_합계_일조시간 + asos_평균_상대습도 + asos_최저_상대습도 + 
+    lag21_asos_평균_해면기압 + lag2_asos_합계_일조시간 + 
+    lag5_asos_합계_일조시간 + lag7_asos_합계_일조시간 + 
+    lag14_asos_합계_일조시간 + lag21_asos_합계_일조시간 + 
+    lag28_asos_합계_일조시간 + lag2_asos_평균_상대습도 + 
+    lag5_asos_평균_상대습도 + lag7_asos_평균_상대습도 + 
+    lag14_asos_평균_상대습도 + lag21_asos_평균_상대습도 + 
+    lag28_asos_평균_상대습도 + aws_평균_기온 + aws_최저_기온 + 
+    aws_평균_풍속 + aws_강수_유무 + lag3_aws_평균_기온 + 
+    lag6_aws_평균_기온 + lag21_aws_평균_기온 + lag14_aws_합계_강수량 + 
+    lag21_aws_합계_강수량 + lag7_aws_평균_풍속 + lag14_aws_평균_풍속 + 
+    lag21_aws_평균_풍속 + lag28_aws_평균_풍속 + aws_평균_풍속_14일평균 + 
+    월 + 계절_온도 + 월_코사인 + 월_사인 + 계절_가을 + 
+    계절_겨울 + 계절_봄 + 요일_금 + 요일_월 + aws_최다_풍향_남 + 
+    aws_최다_풍향_남동 + aws_최다_풍향_남서 + aws_최다_풍향_동, 
+    data = dt_배추)
+
+summary(fit_배추2)
+
+#최량부분집합
+fit_배추3=regsubsets(가격 ~ asos_평균_해면기압 + asos_최저_해면기압 + 
+    asos_합계_일조시간 + asos_평균_상대습도 + asos_최저_상대습도 + 
+    lag21_asos_평균_해면기압 + lag2_asos_합계_일조시간 + 
+    lag5_asos_합계_일조시간 + lag7_asos_합계_일조시간 + 
+    lag14_asos_합계_일조시간 + lag21_asos_합계_일조시간 + 
+    lag28_asos_합계_일조시간 + lag2_asos_평균_상대습도 + 
+    lag5_asos_평균_상대습도 + lag7_asos_평균_상대습도 + 
+    lag14_asos_평균_상대습도 + lag21_asos_평균_상대습도 + 
+    lag28_asos_평균_상대습도 + aws_평균_기온 + aws_최저_기온 + 
+    aws_평균_풍속 + aws_강수_유무 + lag3_aws_평균_기온 + 
+    lag6_aws_평균_기온 + lag21_aws_평균_기온 + lag14_aws_합계_강수량 + 
+    lag21_aws_합계_강수량 + lag7_aws_평균_풍속 + lag14_aws_평균_풍속 + 
+    lag21_aws_평균_풍속 + lag28_aws_평균_풍속 + aws_평균_풍속_14일평균 + 
+    월 + 계절_온도 + 월_코사인 + 월_사인 + 계절_가을 + 
+    계절_겨울 + 계절_봄 + 요일_금 + 요일_월 + aws_최다_풍향_남 + 
+    aws_최다_풍향_남동 + aws_최다_풍향_남서 + aws_최다_풍향_동, 
+    data = dt_배추)
+
+
+names( summary(fit_배추3) )
+
+summary(fit_배추3)$cp
+
+plot(fit_배추3, scale="Cp")   # 
+plot(fit_배추3, scale="bic")  # 
+
+
+
+#cp
+fit_배추_cp=lm(가격 ~ lag21_aws_평균_기온+aws_평균_풍속_14일평균+월+계절_온도+월_코사인+월_사인+계절_봄+요일_월, dt_배추)
+
+#bic
+fit_무_bic=lm(가격 ~ lag21_aws_평균_기온+aws_평균_풍속_14일평균+월+계절_온도+월_코사인+월_사인+계절_봄+요일_월, dt_배추)
+
+summary(fit_무_cp)
+
+```
+무: lag21_aws_평균_기온+aws_평균_풍속_14일평균+월+계절_온도+월_코사인+월_사인+계절_봄+요일_월
+
+bic, cp 같음음
+lag21_aws_평균_기온+aws_평균_풍속_14일평균+월+계절_온도+월_코사인+월_사인+계절_봄+요일_월
+
+## 2-4. 양파
+```{r}
+dt_양파 = dt[품목=='양파',-c(2:3)] 
+
+fit_양파 = lm(가격~., dt_양파)
+par(mfrow=c(2,2))
+plot(fit_양파)
+
+
+#셀렉션
+step(fit_양파)
+
+#셀렉션1
+fit_양파2=lm(formula = 가격 ~ asos_최저_해면기압 + lag7_asos_합계_일조시간 + 
+    lag14_asos_합계_일조시간 + asos_평균_해면기압_14일평균 + 
+    aws_최고_기온 + aws_평균_풍속 + aws_강수_유무 + 
+    lag4_aws_평균_기온 + lag28_aws_평균_기온 + lag21_aws_합계_강수량 + 
+    lag28_aws_합계_강수량 + lag21_aws_평균_풍속 + lag28_aws_평균_풍속 + 
+    aws_합계_강수량_14일평균 + aws_평균_풍속_14일평균 + 
+    월 + 월_사인 + 년도_2020 + 요일_금 + 요일_목 + 
+    aws_최다_풍향_남 + aws_최다_풍향_남동 + aws_최다_풍향_남서 + 
+    aws_최다_풍향_북동, data = dt_양파)
+  
+  
+summary(fit_양파2)
+
+#최량부분집합
+fit_양파3=regsubsets(가격 ~ asos_최저_해면기압 + lag7_asos_합계_일조시간 + 
+    lag14_asos_합계_일조시간 + asos_평균_해면기압_14일평균 + 
+    aws_최고_기온 + aws_평균_풍속 + aws_강수_유무 + 
+    lag4_aws_평균_기온 + lag28_aws_평균_기온 + lag21_aws_합계_강수량 + 
+    lag28_aws_합계_강수량 + lag21_aws_평균_풍속 + lag28_aws_평균_풍속 + 
+    aws_합계_강수량_14일평균 + aws_평균_풍속_14일평균 + 
+    월 + 월_사인 + 년도_2020 + 요일_금 + 요일_목 + 
+    aws_최다_풍향_남 + aws_최다_풍향_남동 + aws_최다_풍향_남서 + 
+    aws_최다_풍향_북동, data = dt_양파)
+
+
+names(summary(fit_양파3))
+
+summary(fit_양파3)$cp
+
+plot(fit_양파3, scale="Cp")
+plot(fit_양파3, scale="bic") 
+
+
+#cp
+fit_양파_cp=lm(가격 ~ asos_평균_해면기압_14일평균 + aws_최고_기온+aws_합계_강수량_14일평균+ aws_평균_풍속_14일평균+월_사인+년도_2020+요일_금+aws_최다_풍향_북동, dt_양파)
+
+#bic
+fit_무_bic=lm(가격 ~ lag21_aws_평균_기온+aws_평균_풍속_14일평균+월+계절_온도+월_코사인+월_사인+계절_봄+요일_월, dt_배추)
+
+summary(fit_양파_cp)
+
+
+
+```
+
+cp
+asos_평균_해면기압_14일평균 + aws_최고_기온+aws_합계_강수량_14일평균+ aws_평균_풍속_14일평균+월_사인+년도_2020+요일_금+aws_최다_풍향_북동
+
+## 2-5. 풋고추
+```{r}
+dt_풋고추 = dt[품목=='풋고추',-c(2:3)] 
+
+fit_풋고추 = lm(가격~., dt_풋고추)
+par(mfrow=c(2,2))
+plot(fit_풋고추)
+
+
+#셀렉션
+step(fit_풋고추)
+
+#셀렉션1
+fit_풋고추2=lm(formula = 가격 ~ lag3_asos_평균_해면기압 + lag4_asos_평균_해면기압 + 
+    lag5_asos_평균_해면기압 + lag6_asos_평균_해면기압 + 
+    lag7_asos_평균_해면기압 + lag14_asos_평균_해면기압 + 
+    lag21_asos_평균_해면기압 + lag1_asos_합계_일조시간 + 
+    lag2_asos_합계_일조시간 + lag5_asos_합계_일조시간 + 
+    lag7_asos_합계_일조시간 + lag1_asos_평균_상대습도 + 
+    lag2_asos_평균_상대습도 + lag5_asos_평균_상대습도 + 
+    lag7_asos_평균_상대습도 + aws_최고_기온 + aws_최저_기온 + 
+    aws_평균_풍속 + aws_최고_풍속 + aws_강수_유무 + 
+    lag5_aws_평균_기온 + lag6_aws_평균_기온 + lag28_aws_평균_기온 + 
+    lag1_aws_평균_풍속 + lag3_aws_평균_풍속 + lag6_aws_평균_풍속 + 
+    lag7_aws_평균_풍속 + 월 + 계절_온도 + 월_코사인 + 
+    월_사인 + 년도_2016 + 년도_2017 + 년도_2018 + 년도_2019 + 
+    계절_겨울 + 계절_봄 + 요일_금 + 시도명_강원 + 
+    시도명_경북 + aws_최다_풍향_남동, data = dt_풋고추)
+  
+  
+  
+summary(fit_풋고추2)
+
+#최량부분집합
+fit_풋고추3=regsubsets(가격 ~ lag3_asos_평균_해면기압 + lag4_asos_평균_해면기압 + 
+    lag5_asos_평균_해면기압 + lag6_asos_평균_해면기압 + 
+    lag7_asos_평균_해면기압 + lag14_asos_평균_해면기압 + 
+    lag21_asos_평균_해면기압 + lag1_asos_합계_일조시간 + 
+    lag2_asos_합계_일조시간 + lag5_asos_합계_일조시간 + 
+    lag7_asos_합계_일조시간 + lag1_asos_평균_상대습도 + 
+    lag2_asos_평균_상대습도 + lag5_asos_평균_상대습도 + 
+    lag7_asos_평균_상대습도 + aws_최고_기온 + aws_최저_기온 + 
+    aws_평균_풍속 + aws_최고_풍속 + aws_강수_유무 + 
+    lag5_aws_평균_기온 + lag6_aws_평균_기온 + lag28_aws_평균_기온 + 
+    lag1_aws_평균_풍속 + lag3_aws_평균_풍속 + lag6_aws_평균_풍속 + 
+    lag7_aws_평균_풍속 + 월 + 계절_온도 + 월_코사인 + 
+    월_사인 + 년도_2016 + 년도_2017 + 년도_2018 + 년도_2019 + 
+    계절_겨울 + 계절_봄 + 요일_금 + 시도명_강원 + 
+    시도명_경북 + aws_최다_풍향_남동, data = dt_풋고추)
+
+
+names(summary(fit_풋고추3))
+
+summary(fit_풋고추3)$cp
+
+plot(fit_풋고추3, scale="Cp")
+plot(fit_풋고추3, scale="bic") 
+
+
+#cp
+fit_풋고추_cp=lm(가격 ~ 월+계절_온도+일_코사인+월_사인+년도_2016+년도_2018+계절_봄, dt_풋고추)
+
+#bic
+#fit_무_bic=lm(가격 ~ lag21_aws_평균_기온+aws_평균_풍속_14일평균+월+계절_온도+월_코사인+월_사인+계절_봄+요일_월, dt_배추)
+
+summary(fit_풋고추_cp)
+
+```
+
+```{r}
+
+
+#다중공선성
+vif()
+
+```
+
+
+
+
+
