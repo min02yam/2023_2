@@ -65,6 +65,7 @@
 - 농작물 가격에 영향을 미치는 요인을 비교 분석하고 오차값이 작은 최종 모형을 도출함
 2. 강한 해석력
 <img width="1047" alt="image" src="https://github.com/min02yam/NongStar/assets/93497667/fb122926-265e-47d4-aab6-94a9aa21cf4f">
+
 3. 일반화 성능
 - 일반화 성능과 해석력 확보를 위해 mljar 라이브러리를 활용하였고 XGboost와 LGBM을 앙상블한 모델을 최종 도출함
 - SHARP Dependence plot 해석을 통해 회귀분석에서 도출한 영향요인과 유사한 패턴을 발견함
