@@ -1,4 +1,4 @@
-[![License](https://img.shields.io/badge/License-%C2%A9%202023%20min02yam-blue)](https://opensource.org/licenses/MIT)
+[![License](https://img.shields.io/badge/License-%C2%A9%202023%20minyoungkim-blue)](https://opensource.org/licenses/MIT)
 
 # 농스타: LSTM을 활용한 기상 데이터 기반 농작물 가격 예측 서비스
 2023 한국정책착회 빅데이터 분석 분야 프로젝트 평가 **한국정책학회장상(우수상)** 수상작입니다.
